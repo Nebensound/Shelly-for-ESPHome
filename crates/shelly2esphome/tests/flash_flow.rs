@@ -40,6 +40,7 @@ struct Fake {
     rssi: i32,
     auth_required: bool,
     ignore_ota: bool,
+    stays_stock_after_ota: bool,
     state: MigrationState,
     error: String,
     max_size: u64,
@@ -63,6 +64,7 @@ fn fake(mode: Mode) -> Fake {
         rssi: -60,
         auth_required: false,
         ignore_ota: false,
+        stays_stock_after_ota: false,
         state: MigrationState::Idle,
         error: String::new(),
         max_size: 1_000_000,
@@ -116,7 +118,9 @@ async fn ota(State(shared): State<Shared>, Query(query): Query<OtaQuery>) -> Res
         tokio::time::sleep(Duration::from_millis(100)).await; // reboots
         let mut fake = shared.lock().unwrap();
         fake.package = package.to_vec();
-        fake.mode = Mode::Migration;
+        if !fake.stays_stock_after_ota {
+            fake.mode = Mode::Migration;
+        }
     });
     Json(serde_json::json!({ "status": "updating" })).into_response()
 }
@@ -406,31 +410,20 @@ async fn reports_when_the_package_is_never_fetched() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reports_when_the_migration_firmware_does_not_boot() {
+    // The package is fetched, but the device never comes up in the migration firmware.
     let mut device = fake(Mode::Stock);
-    device.mode = Mode::Stock;
+    device.stays_stock_after_ota = true;
     let (host, shared) = start_fake(device).await;
-    // Accept the package but never switch to the migration firmware.
     let client = DeviceClient::new(&host, None).unwrap();
     let mut options = options(&shared);
     options.timeouts.migration_boot = Duration::from_millis(300);
     let package = package(Model::ShellyDimmer2);
-    let watcher = Arc::clone(&shared);
-    tokio::spawn(async move {
-        loop {
-            {
-                let mut fake = watcher.lock().unwrap();
-                if fake.mode == Mode::Migration {
-                    fake.mode = Mode::Esphome; // unknown to MG2X.Status
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    });
     let error =
         flash::run(&host, &client, &image(), Some(&package), &options, &mut Recorder::default())
             .await
             .unwrap_err();
     assert!(matches!(error, FlashError::MigrationNotReachable));
+    assert_eq!(shared.lock().unwrap().package, package.bytes().to_vec());
 }
 
 #[tokio::test(flavor = "multi_thread")]
