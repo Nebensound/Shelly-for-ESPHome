@@ -85,7 +85,8 @@ jobs:
               sys.exit("manifest does not match the model")
           EOF
       - name: Rename package
-        run: mv migration_firmware/build/fw.zip "mg2esphome-${{ matrix.model }}.zip"
+        # The build container leaves fw.zip owned by root; copy instead of move.
+        run: cp migration_firmware/build/fw.zip "mg2esphome-${{ matrix.model }}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: mg2esphome-${{ matrix.model }}
