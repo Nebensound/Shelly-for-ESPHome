@@ -50,36 +50,16 @@ const TABLE: [(Model, &str, &str, &str); 17] = [
     (Model::Shelly1L, "SHSW-L", "Shelly1L", "switch1l"),
     (Model::Shelly2, "SHSW-21", "Shelly2", "switch"),
     (Model::Shelly25, "SHSW-25", "Shelly25", "switch25"),
-    (
-        Model::ShellyPlugS,
-        "SHPLG-S",
-        "ShellyPlugS",
-        "shelly-plug-s",
-    ),
-    (
-        Model::ShellyPlugUs,
-        "SHPLG-U1",
-        "ShellyPlugUS",
-        "shelly-plug-u1",
-    ),
+    (Model::ShellyPlugS, "SHPLG-S", "ShellyPlugS", "shelly-plug-s"),
+    (Model::ShellyPlugUs, "SHPLG-U1", "ShellyPlugUS", "shelly-plug-u1"),
     (Model::ShellyRgbw2, "SHRGBW2", "ShellyRGBW2", "rgbw2-color"),
     (Model::ShellyDimmer1, "SHDM-1", "ShellyDimmer1", "dimmer"),
-    (
-        Model::ShellyDimmer2,
-        "SHDM-2",
-        "ShellyDimmer2",
-        "dimmer-l51",
-    ),
+    (Model::ShellyDimmer2, "SHDM-2", "ShellyDimmer2", "dimmer-l51"),
     (Model::ShellyEm, "SHEM", "ShellyEM", "shellyem"),
     (Model::ShellyBulb, "SHBLB-1", "ShellyBulb", "bulb"),
     (Model::ShellyVintage, "SHVIN-1", "ShellyVintage", "bulb6w"),
     (Model::ShellyDuo, "SHBDUO-1", "ShellyDuo", "bulbduo"),
-    (
-        Model::ShellyDuoRgbw,
-        "SHCB-1",
-        "ShellyDuoRGBW",
-        "color-bulb",
-    ),
+    (Model::ShellyDuoRgbw, "SHCB-1", "ShellyDuoRGBW", "color-bulb"),
     (Model::ShellyI3, "SHIX3-1", "ShellyI3", "ix3"),
     (Model::ShellyUni, "SHUNI-1", "ShellyUni", "uni"),
 ];
@@ -88,10 +68,7 @@ impl Model {
     /// Maps the `type` field of the stock firmware's `/shelly` endpoint.
     #[must_use]
     pub fn from_device_type(device_type: &str) -> Option<Self> {
-        TABLE
-            .iter()
-            .find(|(_, ty, _, _)| *ty == device_type)
-            .map(|(model, _, _, _)| *model)
+        TABLE.iter().find(|(_, ty, _, _)| *ty == device_type).map(|(model, _, _, _)| *model)
     }
 
     fn row(self) -> &'static (Model, &'static str, &'static str, &'static str) {

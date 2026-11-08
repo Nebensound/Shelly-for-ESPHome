@@ -72,10 +72,7 @@ impl MigrationPackage {
         if manifest.platform != "esp8266" {
             return Err(PackageError::WrongPlatform(manifest.platform));
         }
-        Ok(Self {
-            bytes,
-            app_name: manifest.name,
-        })
+        Ok(Self { bytes, app_name: manifest.name })
     }
 
     /// Ensures the package is the one built for `model`.
@@ -137,10 +134,7 @@ pub(crate) mod tests {
 
     #[test]
     fn root_level_manifest_is_found() {
-        let zip = package_zip(&[(
-            "manifest.json",
-            r#"{"name":"switch1pm","platform":"esp8266"}"#,
-        )]);
+        let zip = package_zip(&[("manifest.json", r#"{"name":"switch1pm","platform":"esp8266"}"#)]);
         let package = MigrationPackage::parse(zip).expect("package");
         assert!(package.ensure_model(Model::Shelly1Pm).is_ok());
     }
@@ -148,43 +142,22 @@ pub(crate) mod tests {
     #[test]
     fn rejects_the_package_of_another_model() {
         let package = MigrationPackage::parse(package_for(Model::Shelly1Pm)).expect("package");
-        let error = package
-            .ensure_model(Model::ShellyDimmer2)
-            .expect_err("wrong model");
-        assert!(matches!(
-            error,
-            PackageError::WrongModel {
-                expected: "dimmer-l51",
-                ..
-            }
-        ));
+        let error = package.ensure_model(Model::ShellyDimmer2).expect_err("wrong model");
+        assert!(matches!(error, PackageError::WrongModel { expected: "dimmer-l51", .. }));
         assert!(error.to_string().contains("falsches Modell"));
     }
 
     #[test]
     fn rejects_broken_packages() {
-        assert!(matches!(
-            MigrationPackage::parse(b"no zip".to_vec()),
-            Err(PackageError::Zip(_))
-        ));
+        assert!(matches!(MigrationPackage::parse(b"no zip".to_vec()), Err(PackageError::Zip(_))));
         let no_manifest = package_zip(&[("fw.bin", "x")]);
-        assert!(matches!(
-            MigrationPackage::parse(no_manifest),
-            Err(PackageError::MissingManifest)
-        ));
+        assert!(matches!(MigrationPackage::parse(no_manifest), Err(PackageError::MissingManifest)));
         let bad_json = package_zip(&[("manifest.json", "{")]);
-        assert!(matches!(
-            MigrationPackage::parse(bad_json),
-            Err(PackageError::Manifest(_))
-        ));
+        assert!(matches!(MigrationPackage::parse(bad_json), Err(PackageError::Manifest(_))));
         let esp32 = package_zip(&[("manifest.json", r#"{"name":"x","platform":"esp32"}"#)]);
         let error = MigrationPackage::parse(esp32).expect_err("esp32");
         assert!(matches!(error, PackageError::WrongPlatform(ref p) if p == "esp32"));
         assert!(error.to_string().contains("esp32"));
-        assert!(
-            PackageError::MissingManifest
-                .to_string()
-                .contains("manifest.json")
-        );
+        assert!(PackageError::MissingManifest.to_string().contains("manifest.json"));
     }
 }

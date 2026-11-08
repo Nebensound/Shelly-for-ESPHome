@@ -85,10 +85,7 @@ impl Reporter for Console {
     }
 
     fn progress(&mut self, sent_bytes: u64, total_bytes: u64) {
-        let percent = sent_bytes
-            .saturating_mul(100)
-            .checked_div(total_bytes)
-            .unwrap_or(0);
+        let percent = sent_bytes.saturating_mul(100).checked_div(total_bytes).unwrap_or(0);
         if self.last_percent != Some(percent) {
             self.last_percent = Some(percent);
             eprint!("\r  übertragen: {percent:>3} % ({sent_bytes} von {total_bytes} Bytes)");
@@ -118,16 +115,12 @@ async fn probe(host: &str, auth: Option<Credentials>) -> anyhow::Result<()> {
     let client = DeviceClient::new(host, auth)?;
     match client.identify().await? {
         Firmware::Stock { info, rssi_dbm } => {
-            println!(
-                "Originalfirmware: {} ({}), MAC {}",
-                info.device_type, info.fw, info.mac
-            );
+            println!("Originalfirmware: {} ({}), MAC {}", info.device_type, info.fw, info.mac);
             println!("WLAN-Signal: {rssi_dbm} dBm");
             match Model::from_device_type(&info.device_type) {
-                Some(model) => println!(
-                    "Unterstützt; Migrationspaket: {}",
-                    model.migration_asset_name()
-                ),
+                Some(model) => {
+                    println!("Unterstützt; Migrationspaket: {}", model.migration_asset_name())
+                }
                 None => println!("Dieser Gerätetyp wird nicht unterstützt."),
             }
             if info.auth {
@@ -147,10 +140,7 @@ async fn probe(host: &str, auth: Option<Credentials>) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "mirrors the flash subcommand's options"
-)]
+#[expect(clippy::too_many_arguments, reason = "mirrors the flash subcommand's options")]
 async fn flash_command(
     host: &str,
     firmware: &PathBuf,
@@ -179,19 +169,9 @@ async fn flash_command(
         serve_port: port,
         ..FlashOptions::default()
     };
-    let mut console = Console {
-        assume_yes: yes,
-        last_percent: None,
-    };
-    let outcome = flash::run(
-        host,
-        &client,
-        &image,
-        package.as_ref(),
-        &options,
-        &mut console,
-    )
-    .await?;
+    let mut console = Console { assume_yes: yes, last_percent: None };
+    let outcome =
+        flash::run(host, &client, &image, package.as_ref(), &options, &mut console).await?;
     console.info(&format!(
         "Fertig: ESPHome antwortet auf {}. Das Gerät erscheint jetzt im ESPHome-Dashboard.",
         outcome.esphome_address

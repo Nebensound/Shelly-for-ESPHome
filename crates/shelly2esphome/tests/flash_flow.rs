@@ -112,12 +112,7 @@ async fn ota(State(shared): State<Shared>, Query(query): Query<OtaQuery>) -> Res
         }
     }
     tokio::spawn(async move {
-        let package = reqwest::get(&query.url)
-            .await
-            .unwrap()
-            .bytes()
-            .await
-            .unwrap();
+        let package = reqwest::get(&query.url).await.unwrap().bytes().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await; // reboots
         let mut fake = shared.lock().unwrap();
         fake.package = package.to_vec();
@@ -168,12 +163,7 @@ async fn mg2x_flash(State(shared): State<Shared>, Json(request): Json<FlashReque
         fake.size = request.size;
     }
     tokio::spawn(async move {
-        let image = reqwest::get(&request.url)
-            .await
-            .unwrap()
-            .bytes()
-            .await
-            .unwrap();
+        let image = reqwest::get(&request.url).await.unwrap().bytes().await.unwrap();
         let digest = hex::encode(Sha256::digest(&image));
         let (fail_with, open_port, port) = {
             let mut fake = shared.lock().unwrap();
@@ -181,13 +171,12 @@ async fn mg2x_flash(State(shared): State<Shared>, Json(request): Json<FlashReque
             fake.image = image.to_vec();
             (fake.fail_with, fake.open_esphome_port, fake.esphome_port)
         };
-        let failure = fail_with.or(
-            if digest == request.sha256 && image.len() as u64 == request.size {
+        let failure =
+            fail_with.or(if digest == request.sha256 && image.len() as u64 == request.size {
                 None
             } else {
                 Some("hash_mismatch")
-            },
-        );
+            });
         if let Some(reason) = failure {
             let mut fake = shared.lock().unwrap();
             fake.state = MigrationState::Failed;
@@ -260,15 +249,8 @@ fn image() -> FirmwareImage {
 
 fn package(model: Model) -> MigrationPackage {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    writer
-        .start_file("fw/manifest.json", zip::write::SimpleFileOptions::default())
-        .unwrap();
-    write!(
-        writer,
-        r#"{{"name":"{}","platform":"esp8266"}}"#,
-        model.app_name()
-    )
-    .unwrap();
+    writer.start_file("fw/manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
+    write!(writer, r#"{{"name":"{}","platform":"esp8266"}}"#, model.app_name()).unwrap();
     MigrationPackage::parse(writer.finish().unwrap().into_inner()).unwrap()
 }
 
@@ -302,9 +284,7 @@ async fn flashes_from_stock_firmware_end_to_end() {
     let (host, shared) = start_fake(fake(Mode::Stock)).await;
     let package = package(Model::ShellyDimmer2);
     let mut recorder = Recorder::default();
-    let outcome = run(&host, &shared, Some(&package), &mut recorder)
-        .await
-        .unwrap();
+    let outcome = run(&host, &shared, Some(&package), &mut recorder).await.unwrap();
 
     let fake = shared.lock().unwrap();
     assert_eq!(fake.mode, Mode::Esphome);
@@ -315,12 +295,7 @@ async fn flashes_from_stock_firmware_end_to_end() {
     assert!(recorder.summaries[0].contains(image().sha256_hex()));
     let total = image().len() as u64;
     assert_eq!(recorder.last_progress, Some((total, total)));
-    assert!(
-        recorder
-            .messages
-            .iter()
-            .any(|m| m.contains("Migrationsfirmware läuft"))
-    );
+    assert!(recorder.messages.iter().any(|m| m.contains("Migrationsfirmware läuft")));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -340,9 +315,7 @@ async fn reports_a_verification_failure_of_the_device() {
     let mut device = fake(Mode::Migration);
     device.fail_with = Some("hash_mismatch");
     let (host, shared) = start_fake(device).await;
-    let error = run(&host, &shared, None, &mut Recorder::default())
-        .await
-        .unwrap_err();
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(matches!(error, FlashError::DeviceFailed(ref reason) if reason == "hash_mismatch"));
     assert!(error.to_string().contains("erneut ausführen"));
     assert_eq!(shared.lock().unwrap().mode, Mode::Migration);
@@ -353,21 +326,10 @@ async fn stops_before_any_change_on_weak_signal() {
     let mut device = fake(Mode::Stock);
     device.rssi = -83;
     let (host, shared) = start_fake(device).await;
-    let error = run(
-        &host,
-        &shared,
-        Some(&package(Model::ShellyDimmer2)),
-        &mut Recorder::default(),
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        FlashError::WeakSignal {
-            rssi_dbm: -83,
-            min_rssi_dbm: -75
-        }
-    ));
+    let error = run(&host, &shared, Some(&package(Model::ShellyDimmer2)), &mut Recorder::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FlashError::WeakSignal { rssi_dbm: -83, min_rssi_dbm: -75 }));
     assert_eq!(shared.lock().unwrap().ota_requests, 0);
 }
 
@@ -377,47 +339,27 @@ async fn weak_signal_can_be_overridden_deliberately() {
     device.rssi = -83;
     let (host, shared) = start_fake(device).await;
     let client = DeviceClient::new(&host, None).unwrap();
-    let options = FlashOptions {
-        allow_weak_signal: true,
-        ..options(&shared)
-    };
+    let options = FlashOptions { allow_weak_signal: true, ..options(&shared) };
     let package = package(Model::ShellyDimmer2);
-    flash::run(
-        &host,
-        &client,
-        &image(),
-        Some(&package),
-        &options,
-        &mut Recorder::default(),
-    )
-    .await
-    .unwrap();
+    flash::run(&host, &client, &image(), Some(&package), &options, &mut Recorder::default())
+        .await
+        .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn refuses_a_package_for_another_model() {
     let (host, shared) = start_fake(fake(Mode::Stock)).await;
-    let error = run(
-        &host,
-        &shared,
-        Some(&package(Model::Shelly1Pm)),
-        &mut Recorder::default(),
-    )
-    .await
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        FlashError::Package(PackageError::WrongModel { .. })
-    ));
+    let error = run(&host, &shared, Some(&package(Model::Shelly1Pm)), &mut Recorder::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FlashError::Package(PackageError::WrongModel { .. })));
     assert_eq!(shared.lock().unwrap().ota_requests, 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn needs_a_package_on_stock_firmware() {
     let (host, shared) = start_fake(fake(Mode::Stock)).await;
-    let error = run(&host, &shared, None, &mut Recorder::default())
-        .await
-        .unwrap_err();
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(
         matches!(error, FlashError::PackageRequired(ref name) if name == "mg2esphome-ShellyDimmer2.zip")
     );
@@ -428,9 +370,7 @@ async fn rejects_unsupported_models() {
     let mut device = fake(Mode::Stock);
     device.device_type = "SHHT-1";
     let (host, shared) = start_fake(device).await;
-    let error = run(&host, &shared, None, &mut Recorder::default())
-        .await
-        .unwrap_err();
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(matches!(error, FlashError::UnsupportedModel(ref ty) if ty == "SHHT-1"));
 }
 
@@ -438,18 +378,10 @@ async fn rejects_unsupported_models() {
 async fn aborts_when_the_user_declines() {
     for mode in [Mode::Stock, Mode::Migration] {
         let (host, shared) = start_fake(fake(mode)).await;
-        let mut recorder = Recorder {
-            decline: true,
-            ..Recorder::default()
-        };
-        let error = run(
-            &host,
-            &shared,
-            Some(&package(Model::ShellyDimmer2)),
-            &mut recorder,
-        )
-        .await
-        .unwrap_err();
+        let mut recorder = Recorder { decline: true, ..Recorder::default() };
+        let error = run(&host, &shared, Some(&package(Model::ShellyDimmer2)), &mut recorder)
+            .await
+            .unwrap_err();
         assert!(matches!(error, FlashError::Aborted));
         assert_eq!(shared.lock().unwrap().ota_requests, 0);
     }
@@ -464,16 +396,10 @@ async fn reports_when_the_package_is_never_fetched() {
     let mut options = options(&shared);
     options.timeouts.package_fetch = Duration::from_millis(200);
     let package = package(Model::ShellyDimmer2);
-    let error = flash::run(
-        &host,
-        &client,
-        &image(),
-        Some(&package),
-        &options,
-        &mut Recorder::default(),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        flash::run(&host, &client, &image(), Some(&package), &options, &mut Recorder::default())
+            .await
+            .unwrap_err();
     assert!(matches!(error, FlashError::PackageNotFetched(_)));
     assert!(error.to_string().contains("Nichts verändert"));
 }
@@ -500,16 +426,10 @@ async fn reports_when_the_migration_firmware_does_not_boot() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     });
-    let error = flash::run(
-        &host,
-        &client,
-        &image(),
-        Some(&package),
-        &options,
-        &mut Recorder::default(),
-    )
-    .await
-    .unwrap_err();
+    let error =
+        flash::run(&host, &client, &image(), Some(&package), &options, &mut Recorder::default())
+            .await
+            .unwrap_err();
     assert!(matches!(error, FlashError::MigrationNotReachable));
 }
 
@@ -518,13 +438,8 @@ async fn refuses_an_image_larger_than_the_staging_slot() {
     let mut device = fake(Mode::Migration);
     device.max_size = 1000;
     let (host, shared) = start_fake(device).await;
-    let error = run(&host, &shared, None, &mut Recorder::default())
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        FlashError::ImageTooLarge { max_size: 1000, .. }
-    ));
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
+    assert!(matches!(error, FlashError::ImageTooLarge { max_size: 1000, .. }));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -532,13 +447,8 @@ async fn refuses_to_interrupt_a_running_job() {
     let mut device = fake(Mode::Migration);
     device.state = MigrationState::Installing;
     let (host, shared) = start_fake(device).await;
-    let error = run(&host, &shared, None, &mut Recorder::default())
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        FlashError::Busy(MigrationState::Installing)
-    ));
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
+    assert!(matches!(error, FlashError::Busy(MigrationState::Installing)));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -546,9 +456,7 @@ async fn passes_on_a_rejection_of_the_flash_job() {
     let mut device = fake(Mode::Migration);
     device.reject_flash = Some("size_too_large");
     let (host, shared) = start_fake(device).await;
-    let error = run(&host, &shared, None, &mut Recorder::default())
-        .await
-        .unwrap_err();
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(
         matches!(error, FlashError::Device(DeviceError::Rejected(ref m)) if m == "size_too_large")
     );
@@ -562,16 +470,9 @@ async fn reports_when_esphome_does_not_answer() {
     let client = DeviceClient::new(&host, None).unwrap();
     let mut options = options(&shared);
     options.timeouts.esphome_boot = Duration::from_millis(300);
-    let error = flash::run(
-        &host,
-        &client,
-        &image(),
-        None,
-        &options,
-        &mut Recorder::default(),
-    )
-    .await
-    .unwrap_err();
+    let error = flash::run(&host, &client, &image(), None, &options, &mut Recorder::default())
+        .await
+        .unwrap_err();
     assert!(matches!(error, FlashError::EsphomeNotSeen(_)));
 }
 
@@ -579,17 +480,11 @@ async fn reports_when_esphome_does_not_answer() {
 async fn identifies_unknown_firmware_and_missing_login() {
     let (host, _shared) = start_fake(fake(Mode::Esphome)).await;
     let client = DeviceClient::new(&host, None).unwrap();
-    assert!(matches!(
-        client.identify().await,
-        Err(DeviceError::UnknownFirmware)
-    ));
+    assert!(matches!(client.identify().await, Err(DeviceError::UnknownFirmware)));
 
     let mut device = fake(Mode::Stock);
     device.auth_required = true;
     let (host, _shared) = start_fake(device).await;
     let client = DeviceClient::new(&host, None).unwrap();
-    assert!(matches!(
-        client.identify().await,
-        Err(DeviceError::AuthRequired)
-    ));
+    assert!(matches!(client.identify().await, Err(DeviceError::AuthRequired)));
 }

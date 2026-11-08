@@ -63,10 +63,8 @@ async fn serve_file(State(file): State<ServedFile>) -> impl IntoResponse {
         .collect();
     let stats = Arc::clone(&file.stats);
     let stream = futures_util::stream::iter(chunks.into_iter().map(move |chunk| {
-        let sent = stats
-            .sent_bytes
-            .fetch_add(chunk.len() as u64, Ordering::SeqCst)
-            + chunk.len() as u64;
+        let sent =
+            stats.sent_bytes.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
         if sent == total as u64 {
             stats.completed.fetch_add(1, Ordering::SeqCst);
         }
@@ -74,10 +72,7 @@ async fn serve_file(State(file): State<ServedFile>) -> impl IntoResponse {
     }));
     (
         [
-            (
-                axum::http::header::CONTENT_TYPE,
-                "application/octet-stream".to_owned(),
-            ),
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_owned()),
             (axum::http::header::CONTENT_LENGTH, total.to_string()),
         ],
         Body::from_stream(stream),
@@ -99,14 +94,8 @@ impl FileServer {
     /// # Errors
     /// Fails if the address cannot be bound.
     pub async fn start(bind: SocketAddr, package: Bytes, image: Bytes) -> std::io::Result<Self> {
-        let package_file = ServedFile {
-            bytes: package,
-            stats: Arc::default(),
-        };
-        let image_file = ServedFile {
-            bytes: image,
-            stats: Arc::default(),
-        };
+        let package_file = ServedFile { bytes: package, stats: Arc::default() };
+        let image_file = ServedFile { bytes: image, stats: Arc::default() };
         let package_stats = Arc::clone(&package_file.stats);
         let image_stats = Arc::clone(&image_file.stats);
         let app = Router::new()
@@ -122,12 +111,7 @@ impl FileServer {
                 })
                 .await;
         });
-        Ok(Self {
-            address,
-            package: package_stats,
-            image: image_stats,
-            shutdown: Some(shutdown),
-        })
+        Ok(Self { address, package: package_stats, image: image_stats, shutdown: Some(shutdown) })
     }
 
     /// Address the server listens on.
@@ -176,23 +160,15 @@ mod tests {
                 .await
                 .expect("server");
 
-        let body = reqwest::get(server.url(IMAGE_PATH))
-            .await
-            .expect("get")
-            .bytes()
-            .await
-            .expect("body");
+        let body =
+            reqwest::get(server.url(IMAGE_PATH)).await.expect("get").bytes().await.expect("body");
         assert_eq!(body, image);
         assert_eq!(server.image_stats().requests(), 1);
         assert_eq!(server.image_stats().sent_bytes(), 10_000);
         assert_eq!(server.image_stats().completed(), 1);
 
-        let zip = reqwest::get(server.url(PACKAGE_PATH))
-            .await
-            .expect("get")
-            .bytes()
-            .await
-            .expect("body");
+        let zip =
+            reqwest::get(server.url(PACKAGE_PATH)).await.expect("get").bytes().await.expect("body");
         assert_eq!(&zip[..], b"zip");
         assert_eq!(server.package_stats().completed(), 1);
         assert_eq!(server.address().ip().to_string(), "127.0.0.1");

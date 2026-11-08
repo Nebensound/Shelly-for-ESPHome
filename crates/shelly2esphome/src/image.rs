@@ -66,14 +66,10 @@ impl FirmwareImage {
             return Err(ImageError::Compressed);
         }
         if bytes.len() < MIN_IMAGE_BYTES {
-            return Err(ImageError::TooSmall {
-                actual: bytes.len(),
-            });
+            return Err(ImageError::TooSmall { actual: bytes.len() });
         }
         if bytes.len() > MAX_IMAGE_BYTES {
-            return Err(ImageError::TooLarge {
-                actual: bytes.len(),
-            });
+            return Err(ImageError::TooLarge { actual: bytes.len() });
         }
         if bytes[0] != IMAGE_MAGIC {
             return Err(ImageError::BadMagic(bytes[0]));
@@ -135,10 +131,7 @@ pub(crate) mod tests {
         assert!(!image.is_empty());
         assert_eq!(image.bytes().len(), MIN_IMAGE_BYTES);
         assert_eq!(image.sha256_hex().len(), 64);
-        assert_eq!(
-            image.sha256_hex(),
-            hex::encode(Sha256::digest(valid_image(MIN_IMAGE_BYTES)))
-        );
+        assert_eq!(image.sha256_hex(), hex::encode(Sha256::digest(valid_image(MIN_IMAGE_BYTES))));
     }
 
     #[test]
@@ -149,23 +142,16 @@ pub(crate) mod tests {
 
         assert_eq!(
             FirmwareImage::parse(valid_image(MIN_IMAGE_BYTES - 1)).err(),
-            Some(ImageError::TooSmall {
-                actual: MIN_IMAGE_BYTES - 1
-            })
+            Some(ImageError::TooSmall { actual: MIN_IMAGE_BYTES - 1 })
         );
         assert_eq!(
             FirmwareImage::parse(valid_image(MAX_IMAGE_BYTES + 1)).err(),
-            Some(ImageError::TooLarge {
-                actual: MAX_IMAGE_BYTES + 1
-            })
+            Some(ImageError::TooLarge { actual: MAX_IMAGE_BYTES + 1 })
         );
 
         let mut magic = valid_image(MIN_IMAGE_BYTES);
         magic[0] = 0x00;
-        assert_eq!(
-            FirmwareImage::parse(magic).err(),
-            Some(ImageError::BadMagic(0))
-        );
+        assert_eq!(FirmwareImage::parse(magic).err(), Some(ImageError::BadMagic(0)));
 
         for count in [0_u8, 17] {
             let mut segments = valid_image(MIN_IMAGE_BYTES);
@@ -178,35 +164,16 @@ pub(crate) mod tests {
 
         let mut esp32 = valid_image(MIN_IMAGE_BYTES);
         esp32[4..8].copy_from_slice(&0x4008_0400_u32.to_le_bytes());
-        assert_eq!(
-            FirmwareImage::parse(esp32).err(),
-            Some(ImageError::NotEsp8266(0x4008_0400))
-        );
+        assert_eq!(FirmwareImage::parse(esp32).err(), Some(ImageError::NotEsp8266(0x4008_0400)));
     }
 
     #[test]
     fn error_messages_are_german_and_specific() {
         assert!(ImageError::Compressed.to_string().contains("gzip"));
-        assert!(
-            ImageError::TooSmall { actual: 1 }
-                .to_string()
-                .contains("zu klein")
-        );
-        assert!(
-            ImageError::TooLarge { actual: 1 }
-                .to_string()
-                .contains("zu groß")
-        );
+        assert!(ImageError::TooSmall { actual: 1 }.to_string().contains("zu klein"));
+        assert!(ImageError::TooLarge { actual: 1 }.to_string().contains("zu groß"));
         assert!(ImageError::BadMagic(0x12).to_string().contains("0x12"));
-        assert!(
-            ImageError::BadSegmentCount(0)
-                .to_string()
-                .contains("0 Segmente")
-        );
-        assert!(
-            ImageError::NotEsp8266(0x4008_0400)
-                .to_string()
-                .contains("ESP32")
-        );
+        assert!(ImageError::BadSegmentCount(0).to_string().contains("0 Segmente"));
+        assert!(ImageError::NotEsp8266(0x4008_0400).to_string().contains("ESP32"));
     }
 }

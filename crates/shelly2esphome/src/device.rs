@@ -17,9 +17,7 @@ pub struct Credentials {
 
 impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credentials")
-            .field("user", &self.user)
-            .finish_non_exhaustive()
+        f.debug_struct("Credentials").field("user", &self.user).finish_non_exhaustive()
     }
 }
 
@@ -28,10 +26,9 @@ impl std::str::FromStr for Credentials {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.split_once(':') {
-            Some((user, password)) if !user.is_empty() => Ok(Self {
-                user: user.to_owned(),
-                password: password.to_owned(),
-            }),
+            Some((user, password)) if !user.is_empty() => {
+                Ok(Self { user: user.to_owned(), password: password.to_owned() })
+            }
             _ => Err("erwartet benutzer:passwort".to_owned()),
         }
     }
@@ -160,14 +157,8 @@ impl DeviceClient {
     /// # Errors
     /// Fails if the HTTP client cannot be constructed.
     pub fn new(host: &str, credentials: Option<Credentials>) -> Result<Self, DeviceError> {
-        let http = reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()?;
-        Ok(Self {
-            base_url: format!("http://{host}"),
-            http,
-            credentials,
-        })
+        let http = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+        Ok(Self { base_url: format!("http://{host}"), http, credentials })
     }
 
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
@@ -201,10 +192,7 @@ impl DeviceClient {
         match response.status().as_u16() {
             200 => Ok(response.json::<StockStatusWire>().await?.wifi_sta.rssi),
             401 => Err(DeviceError::AuthRequired),
-            status => Err(DeviceError::Status {
-                endpoint: "/status",
-                status,
-            }),
+            status => Err(DeviceError::Status { endpoint: "/status", status }),
         }
     }
 
@@ -213,18 +201,11 @@ impl DeviceClient {
     /// # Errors
     /// Fails if the device refuses the request.
     pub async fn start_stock_ota(&self, package_url: &str) -> Result<(), DeviceError> {
-        let response = self
-            .get("/ota")
-            .query(&[("url", package_url)])
-            .send()
-            .await?;
+        let response = self.get("/ota").query(&[("url", package_url)]).send().await?;
         match response.status().as_u16() {
             200 => Ok(()),
             401 => Err(DeviceError::AuthRequired),
-            status => Err(DeviceError::Status {
-                endpoint: "/ota",
-                status,
-            }),
+            status => Err(DeviceError::Status { endpoint: "/ota", status }),
         }
     }
 
@@ -233,11 +214,7 @@ impl DeviceClient {
     /// # Errors
     /// Fails if the device is unreachable or speaks another protocol.
     pub async fn migration_status(&self) -> Result<Option<MigrationStatus>, DeviceError> {
-        let response = self
-            .http
-            .get(format!("{}/rpc/MG2X.Status", self.base_url))
-            .send()
-            .await?;
+        let response = self.http.get(format!("{}/rpc/MG2X.Status", self.base_url)).send().await?;
         if !response.status().is_success() {
             return Ok(None);
         }
@@ -262,12 +239,8 @@ impl DeviceClient {
     ) -> Result<(), DeviceError> {
         let body =
             serde_json::json!({ "url": image_url, "size": size_bytes, "sha256": sha256_hex });
-        let response = self
-            .http
-            .post(format!("{}/rpc/MG2X.Flash", self.base_url))
-            .json(&body)
-            .send()
-            .await?;
+        let response =
+            self.http.post(format!("{}/rpc/MG2X.Flash", self.base_url)).json(&body).send().await?;
         let status = response.status();
         let text = response.text().await?;
         if let Ok(error) = serde_json::from_str::<RpcError>(&text) {
@@ -284,9 +257,7 @@ impl DeviceClient {
             Ok(FlashStarted { started: false }) => {
                 Err(DeviceError::Rejected("connect_failed".into()))
             }
-            Err(error) => Err(DeviceError::Rejected(format!(
-                "unerwartete Antwort: {error}"
-            ))),
+            Err(error) => Err(DeviceError::Rejected(format!("unerwartete Antwort: {error}"))),
         }
     }
 }
@@ -318,28 +289,11 @@ mod tests {
     #[test]
     fn error_messages_are_german() {
         assert!(DeviceError::AuthRequired.to_string().contains("Anmeldung"));
+        assert!(DeviceError::UnknownFirmware.to_string().contains("unbekannte Firmware"));
+        assert!(DeviceError::UnsupportedProtocol(2).to_string().contains("Protokoll 2"));
+        assert!(DeviceError::Rejected("busy".into()).to_string().contains("busy"));
         assert!(
-            DeviceError::UnknownFirmware
-                .to_string()
-                .contains("unbekannte Firmware")
-        );
-        assert!(
-            DeviceError::UnsupportedProtocol(2)
-                .to_string()
-                .contains("Protokoll 2")
-        );
-        assert!(
-            DeviceError::Rejected("busy".into())
-                .to_string()
-                .contains("busy")
-        );
-        assert!(
-            DeviceError::Status {
-                endpoint: "/ota",
-                status: 500
-            }
-            .to_string()
-            .contains("HTTP 500")
+            DeviceError::Status { endpoint: "/ota", status: 500 }.to_string().contains("HTTP 500")
         );
     }
 }

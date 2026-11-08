@@ -182,11 +182,7 @@ pub async fn resolve(host: &str) -> std::io::Result<SocketAddr> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, 80));
     }
-    let query = if host.contains(':') {
-        host.to_owned()
-    } else {
-        format!("{host}:80")
-    };
+    let query = if host.contains(':') { host.to_owned() } else { format!("{host}:80") };
     tokio::net::lookup_host(query)
         .await?
         .next()
@@ -199,11 +195,7 @@ pub async fn resolve(host: &str) -> std::io::Result<SocketAddr> {
 /// Fails if there is no route to `target`.
 pub fn local_ip_towards(target: IpAddr) -> std::io::Result<IpAddr> {
     let socket = UdpSocket::bind(SocketAddr::new(
-        if target.is_ipv4() {
-            IpAddr::from([0, 0, 0, 0])
-        } else {
-            IpAddr::from([0_u16; 8])
-        },
+        if target.is_ipv4() { IpAddr::from([0, 0, 0, 0]) } else { IpAddr::from([0_u16; 8]) },
         0,
     ))?;
     socket.connect(SocketAddr::new(target, 80))?;
@@ -312,11 +304,8 @@ async fn monitor_flash(
 async fn wait_for_esphome(address: SocketAddr, timeouts: &Timeouts) -> Result<(), FlashError> {
     let deadline = Instant::now() + timeouts.esphome_boot;
     loop {
-        let attempt = timeout(
-            Duration::from_secs(2),
-            tokio::net::TcpStream::connect(address),
-        )
-        .await;
+        let attempt =
+            timeout(Duration::from_secs(2), tokio::net::TcpStream::connect(address)).await;
         if matches!(attempt, Ok(Ok(_))) {
             return Ok(());
         }
@@ -366,10 +355,7 @@ pub async fn run(
             (Some(package), None)
         }
         Firmware::Migration(status) => {
-            if matches!(
-                status.state,
-                MigrationState::Downloading | MigrationState::Installing
-            ) {
+            if matches!(status.state, MigrationState::Downloading | MigrationState::Installing) {
                 return Err(FlashError::Busy(status.state));
             }
             if !reporter.confirm(&resume_summary(image)) {
@@ -379,9 +365,7 @@ pub async fn run(
         }
     };
 
-    let package_bytes = stock
-        .map(|package| package.bytes().clone())
-        .unwrap_or_default();
+    let package_bytes = stock.map(|package| package.bytes().clone()).unwrap_or_default();
     let server = FileServer::start(
         SocketAddr::new(serve_ip, options.serve_port),
         package_bytes,
@@ -404,16 +388,11 @@ pub async fn run(
 
     let image_len = image.len() as u64;
     if image_len > status.max_size {
-        return Err(FlashError::ImageTooLarge {
-            size: image_len,
-            max_size: status.max_size,
-        });
+        return Err(FlashError::ImageTooLarge { size: image_len, max_size: status.max_size });
     }
 
     reporter.info("ESPHome-Firmware wird übertragen und geprüft …");
-    client
-        .start_migration(&server.url(IMAGE_PATH), image.len(), image.sha256_hex())
-        .await?;
+    client.start_migration(&server.url(IMAGE_PATH), image.len(), image.sha256_hex()).await?;
     monitor_flash(client, &server, image_len, &options.timeouts, reporter).await?;
     reporter.progress(image_len, image_len);
 
@@ -429,14 +408,8 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_all_host_forms() {
-        assert_eq!(
-            resolve("10.10.5.78").await.expect("ip").to_string(),
-            "10.10.5.78:80"
-        );
-        assert_eq!(
-            resolve("10.10.5.78:8080").await.expect("ip:port").port(),
-            8080
-        );
+        assert_eq!(resolve("10.10.5.78").await.expect("ip").to_string(), "10.10.5.78:80");
+        assert_eq!(resolve("10.10.5.78:8080").await.expect("ip:port").port(), 8080);
         assert_eq!(resolve("localhost").await.expect("name").port(), 80);
         assert_eq!(resolve("localhost:81").await.expect("name:port").port(), 81);
         assert!(resolve("does-not-exist.invalid").await.is_err());
