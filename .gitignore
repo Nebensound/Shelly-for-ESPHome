@@ -13,3 +13,4 @@ migration_firmware/build/
 migration_firmware/deps/
 *.gcda
 *.gcno
+target/
