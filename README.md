@@ -8,9 +8,15 @@ stock firmware, installs a small intermediate firmware (the *migration
 firmware*), and lets it download, verify and install the ESPHome
 `firmware.bin` you built yourself, Wi-Fi settings included.
 
-> **Status:** prototype. The procedure has been tested against a simulated
-> device; test it on a spare device before migrating devices that are hard to
-> reach.
+> **Status:** prototype. Tested end to end against a simulated device and on
+> real hardware (November 2026, stock firmware 1.14.0):
+>
+> | Device | Signal | Result |
+> |---|---|---|
+> | Shelly 1PM (`SHSW-PM`) | −81 dBm | ESPHome running |
+> | Shelly Dimmer 2 (`SHDM-2`), in the wall | −83 dBm | ESPHome running, STM32 reflashed by ESPHome |
+>
+> Other models are built by CI but not yet tested on hardware.
 
 ## How it works
 
@@ -57,8 +63,11 @@ Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
   credentials are wrong.
 - Enable `api:` and `ota:`. The tool detects success on the API port 6053, and
   later updates then run through ESPHome.
-- Use the **uncompressed** `firmware.bin` (ESPHome dashboard: *Download →
-  Legacy/factory format*), not `firmware.ota.bin.gz`.
+- Use the **uncompressed** single-image firmware (ESPHome dashboard:
+  *Download → Firmware-Image*), not the ELF file and not `firmware.ota.bin.gz`.
+- Shelly Dimmer 1/2: use the `shelly_dimmer` light with `firmware: update:
+  true`. ESPHome then reflashes the STM32 co-processor on first boot; there is
+  no way back to the Shelly STM32 firmware.
 
 ### 2. Get the migration package for the model
 
@@ -75,8 +84,12 @@ Alternatively, download the macOS binary from the CI artifacts
 ```sh
 shelly2esphome probe 10.10.5.79
 shelly2esphome check firmware.bin
-shelly2esphome flash 10.10.5.79 --firmware firmware.bin --migration mg2esphome-Shelly1PM.zip
+shelly2esphome flash 10.10.5.79 --firmware firmware.bin --migration mg2esphome-Shelly1PM.zip --port 8266
 ```
+
+Before flashing, save the device's stock settings (`/settings`,
+`/settings/light/0` or `/settings/relay/0`, `/settings/actions`) if you want to
+reproduce them in ESPHome; they are lost afterwards.
 
 `flash` shows a summary and asks for confirmation before it changes anything.
 It refuses to run when:
@@ -87,9 +100,20 @@ It refuses to run when:
   `--allow-weak-signal` overrides this deliberately),
 - the stock firmware requires a login that was not given (`--auth user:password`).
 
-The device downloads both files from your computer. It must be able to reach
-your computer on the chosen port; set `--serve-ip`/`--port` if the address
-is not detected correctly or a firewall sits in between (e.g. between VLANs).
+The device downloads both files from your computer, so **the device must be
+able to open a TCP connection to your computer**. In segmented networks where
+only the computer may connect into the IoT network, add a temporary firewall
+rule for the migration:
+
+| Action | Source | Destination | Protocol / port |
+|---|---|---|---|
+| allow | the Shelly's IP | your computer's IP | TCP, the port given with `--port` (e.g. 8266) |
+
+Everything else (control via port 80, ESPHome detection via port 6053) is
+initiated by your computer. Remove the rule afterwards. If the device cannot
+reach your computer, `flash` stops with "Migrationspaket nicht abgeholt" and
+nothing is changed. Set `--serve-ip` if the detected address of your computer
+is wrong.
 
 ## Recovery
 
