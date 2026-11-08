@@ -21,7 +21,7 @@ live here were removed on purpose; do not reintroduce them.
   - `main.rs` is the console UI.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
   - `src/main.c` is the hardware glue: rboot, SPI flash, HTTP, RPC.
-  - `src/job.c`, `src/writer.c` and `src/sha256.c` are hardware independent and
+  - `src/mg2x_job.c`, `src/mg2x_writer.c` and `src/mg2x_sha256.c` are hardware independent and
     unit tested on the host (`test/`).
 
 ## Invariants

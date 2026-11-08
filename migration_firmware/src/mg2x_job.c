@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-3.0-only
  */
-#include "job.h"
+#include "mg2x_job.h"
 
 #include <string.h>
 

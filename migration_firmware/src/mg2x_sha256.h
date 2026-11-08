@@ -4,6 +4,9 @@
  * Minimal SHA-256 (FIPS 180-4) used to verify the downloaded target image.
  * Self-contained so it can be unit tested on the host and does not depend on
  * which crypto library the Mongoose OS build happens to link.
+ *
+ * All own modules carry the mg2x_ prefix: mos puts every object file into one
+ * flat directory, so src/sha256.c would collide with mbedTLS's sha256.c.
  */
 #ifndef MG2X_SHA256_H
 #define MG2X_SHA256_H

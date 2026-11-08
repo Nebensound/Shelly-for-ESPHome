@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-3.0-only
  */
-#include "sha256.h"
+#include "mg2x_sha256.h"
 
 #include <string.h>
 
