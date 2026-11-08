@@ -1,292 +1,344 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-only
+ *
+ * Intermediate firmware that replaces the Mongoose OS based Shelly Gen1 stock
+ * firmware with a user-built ESPHome image, over the air.
+ *
+ * Based on mgos-to-tasmota by Mark Dornbach (GPL-3.0), changed so that:
+ *  - nothing is downloaded automatically: the shelly2esphome CLI hands over
+ *    URL, size and SHA-256 via the RPC method MG2X.Flash,
+ *  - the image is verified (size, magic byte, SHA-256) before anything outside
+ *    the staging area is touched; on any error the device stays in this
+ *    firmware and accepts a new MG2X.Flash request,
+ *  - progress and errors are reported via MG2X.Status.
+ *
+ * Flash layout during the job (rboot, two ROM slots):
+ *   0x0                bootloader            <- overwritten last
+ *   BOOT_CONFIG_ADDR   rboot config          <- overwritten second to last
+ *   roms[0]            staging area          <- download target
+ *   roms[1]            this firmware (running, never written)
+ */
 #include "mgos.h"
+#include "mgos_rpc.h"
+#include "frozen.h"
 #include "spi_flash.h"
 #include "esp_rboot.h"
 
-#define BLOCK_SIZE 4096
-#define CHUNK_SIZE 4096
-#define TEMP_STORAGE 0
+#include "job.h"
+#include "writer.h"
 
-// current bootloader configuration
-rboot_config *rboot_cfg;
+#define MG2X_PROTOCOL_VERSION 1
+#define MG2X_STAGING_ROM 0
+#define MG2X_RUNNING_ROM 1
+#define MG2X_SCRATCH_SECTORS 3u
+#define MG2X_MAX_REDIRECTS 3
+#define MG2X_STALL_TIMEOUT_MICROS (60 * 1000 * 1000)
+#define MG2X_WATCHDOG_INTERVAL_MS 5000
+
+typedef enum {
+  MG2X_STATE_IDLE,
+  MG2X_STATE_DOWNLOADING,
+  MG2X_STATE_INSTALLING,
+  MG2X_STATE_FAILED
+} mg2x_state;
+
+static rboot_config *s_rboot_cfg;
+static mg2x_state s_state = MG2X_STATE_IDLE;
+static mg2x_job s_job;
+static mg2x_writer s_writer;
+static char s_error[32] = "";
+static struct mg_connection *s_conn = NULL;
+static uintptr_t s_generation = 0;
+static int s_redirects = 0;
+static int64_t s_last_progress_micros = 0;
+
+static const char *state_str(mg2x_state state) {
+  switch (state) {
+  case MG2X_STATE_IDLE:
+    return "idle";
+  case MG2X_STATE_DOWNLOADING:
+    return "downloading";
+  case MG2X_STATE_INSTALLING:
+    return "installing";
+  case MG2X_STATE_FAILED:
+    return "failed";
+  }
+  return "unknown";
+}
+
+static void fail(const char *reason) {
+  s_state = MG2X_STATE_FAILED;
+  snprintf(s_error, sizeof(s_error), "%s", reason);
+  LOG(LL_ERROR, ("flash job failed: %s", reason));
+}
+
+static uint32_t staging_address(void) { return s_rboot_cfg->roms[MG2X_STAGING_ROM]; }
+
+static uint32_t running_address(void) { return s_rboot_cfg->roms[s_rboot_cfg->current_rom]; }
+
+/* Largest image that leaves room for the two scratch sectors used below. */
+static uint32_t max_image_bytes(void) {
+  uint32_t area = running_address() - staging_address();
+  uint32_t reserved = MG2X_SCRATCH_SECTORS * MG2X_SECTOR_BYTES;
+  return area > reserved ? area - reserved : 0u;
+}
+
+/* The install step moves the region behind the boot config separately. */
+static uint32_t min_image_bytes(void) {
+  return (uint32_t)BOOT_CONFIG_ADDR + 2u * MG2X_SECTOR_BYTES;
+}
+
+static int flash_erase(void *ctx, uint32_t sector_index) {
+  (void)ctx;
+  return spi_flash_erase_sector((uint16)sector_index) == SPI_FLASH_RESULT_OK ? 0 : 1;
+}
+
+static int flash_write(void *ctx, uint32_t address, const uint8_t *data, uint32_t len_bytes) {
+  (void)ctx;
+  /* writer.block is 4-byte aligned and len_bytes is a multiple of 4. */
+  return spi_flash_write(address, (uint32 *)(uintptr_t)data, len_bytes) == SPI_FLASH_RESULT_OK ? 0
+                                                                                               : 1;
+}
 
 /*
-	TODO
-	* hash verify download!
-	* disable wdt and interrupts during critical write operations
-	* move to esp flash write lib:
-	#include "esp_flash_writer.h"
-	static struct esp_flash_write_ctx s_wctx;
-	...
-	case MG_EV_CONNECT:
-		esp_init_flash_write_ctx(0x2000, (0x100000 - 0x2000));
-	...
-	case MG_EV_HTTP_CHUNK:
-		esp_flash_write(&s_wctx, hm->body);
-*/
+ * Copies `len_bytes` (rounded up to whole words) sector by sector. Source and
+ * destination are sector aligned; copying downwards with src > dest is safe
+ * for overlapping regions because each sector is read before it is erased.
+ */
+static bool block_copy(uint32_t src, uint32_t dest, uint32_t len_bytes) {
+  uint8_t *buffer = s_writer.block; /* free again after the final flush */
+  uint32_t total = (len_bytes + 3u) & ~3u;
+  for (uint32_t offset = 0; offset < total; offset += MG2X_SECTOR_BYTES) {
+    uint32_t chunk = total - offset < MG2X_SECTOR_BYTES ? total - offset : MG2X_SECTOR_BYTES;
+    if (spi_flash_read(src + offset, (uint32 *)(uintptr_t)buffer, chunk) != SPI_FLASH_RESULT_OK ||
+        spi_flash_erase_sector((uint16)((dest + offset) / MG2X_SECTOR_BYTES)) !=
+            SPI_FLASH_RESULT_OK ||
+        spi_flash_write(dest + offset, (uint32 *)(uintptr_t)buffer, chunk) != SPI_FLASH_RESULT_OK) {
+      LOG(LL_ERROR, ("block copy 0x%lx -> 0x%lx failed at offset %lu", (unsigned long)src,
+                     (unsigned long)dest, (unsigned long)offset));
+      return false;
+    }
+  }
+  return true;
+}
 
-/*
-	src	src address
-	dest	destination addess
-	length	block length / byte
-*/
-void block_copy(uint32 src, uint32 dest, uint32 length) {
-	LOG(LL_DEBUG, ("block_copy start: cp %lu bytes from 0x%lx to 0x%lx", length, src, dest));
-	uint32 chunk = CHUNK_SIZE, offset = 0;
-	bool done    = false;
-	char *data   = NULL;
+/* Moves the verified image from the staging area to 0x0 and restarts. */
+static void install(void) {
+  s_state = MG2X_STATE_INSTALLING;
+  uint32_t staging = staging_address();
+  uint32_t received = s_job.received_bytes;
+  uint32_t scratch_boot = mg2x_writer_end_address(&s_writer);
+  uint32_t scratch_config = scratch_boot + MG2X_SECTOR_BYTES;
+  uint32_t boot_config = (uint32_t)BOOT_CONFIG_ADDR;
 
-	if (CHUNK_SIZE > BLOCK_SIZE || BLOCK_SIZE % CHUNK_SIZE != 0) {
-		LOG(LL_ERROR, ("invalid CHUNK_SIZE. must be a divider of BLOCK_SIZE and < BLOCK_SIZE"));
-		goto clean;
-	}
-	if ( src % BLOCK_SIZE != 0 || dest % BLOCK_SIZE != 0 ) {
-		LOG(LL_ERROR, ("cannot copy: src or dest not aligned with fs block"));
-		goto clean;
-	}
-	data = (char*) malloc(chunk);
-	if (data == NULL) {
-		LOG(LL_ERROR, ("out of memory"));
-		goto clean;
-	}
+  LOG(LL_INFO, ("image verified (%lu bytes), installing", (unsigned long)received));
 
-	while ( !done ) {
-		if ( (long) (length - offset - chunk) <= 0 ) {
-			chunk = length - offset;
-			done  = true;
-		}
-		// erase new sector
-		if ( offset % BLOCK_SIZE == 0 ) {
-			if ( spi_flash_erase_sector( (dest + offset) / BLOCK_SIZE ) != 0 ) {
-				LOG(LL_ERROR, ("flash delete error! abort."));
-				goto clean;
-			}
-		}
+  /* Keep bootloader and boot config of the new image aside ... */
+  bool ok =
+      block_copy(staging, scratch_boot, MG2X_SECTOR_BYTES) &&
+      block_copy(staging + boot_config, scratch_config, MG2X_SECTOR_BYTES) &&
+      /* ... move everything between them ... */
+      block_copy(staging + MG2X_SECTOR_BYTES, MG2X_SECTOR_BYTES, boot_config - MG2X_SECTOR_BYTES) &&
+      /* ... and everything after the boot config ... */
+      block_copy(staging + boot_config + MG2X_SECTOR_BYTES, boot_config + MG2X_SECTOR_BYTES,
+                 received - boot_config - MG2X_SECTOR_BYTES) &&
+      /* ... then the boot config and the bootloader as the very last step. */
+      block_copy(scratch_config, boot_config, MG2X_SECTOR_BYTES) &&
+      block_copy(scratch_boot, 0, MG2X_SECTOR_BYTES);
+  if (!ok) {
+    fail("install_copy");
+    return;
+  }
+  LOG(LL_INFO, ("install done, restarting into the new firmware"));
+  mgos_system_restart_after(200);
+}
 
-		if ( spi_flash_read ( src  + offset, (uint32 *) data, chunk) != 0 ) {
-			LOG(LL_ERROR, ("flash read error! abort."));
-			goto clean;
-		}
-		if ( spi_flash_write( dest + offset, (uint32 *) data, chunk) != 0 ) {
-			LOG(LL_ERROR, ("flash write error! abort."));
-			goto clean;
-		}
-		offset = offset + chunk;
-	}
-	LOG(LL_DEBUG, ("block_copy done"));
-
-	clean:
-	if (data != NULL) { free(data); }
-};
-
-struct state {
-	int status;                     // request status
-	uint curr_blk, next_blk;	// current / next block to be written
-	uint left_in_block;		// bytes left until current buffer is full
-	uint32 recieved;                // number of bytes recieved
-	uint32 dest;			// target flash address
-	char data[BLOCK_SIZE];		// buffer for a block
-};
+static void finish_download(void) {
+  mg2x_job_result job_result = mg2x_job_finish(&s_job);
+  if (job_result != MG2X_JOB_OK) {
+    fail(mg2x_job_result_str(job_result));
+    return;
+  }
+  mg2x_writer_result writer_result = mg2x_writer_flush(&s_writer);
+  if (writer_result != MG2X_WRITER_OK) {
+    fail(mg2x_writer_result_str(writer_result));
+    return;
+  }
+  install();
+}
 
 static void http_cb(struct mg_connection *c, int ev, void *ev_data, void *ud) {
-	struct http_message *hm = (struct http_message *) ev_data;
-	struct state *state     = (struct state *) ud;
+  struct http_message *hm = (struct http_message *)ev_data;
+  uintptr_t generation = (uintptr_t)ud;
+  if (generation != s_generation) {
+    /* Event of a connection that was replaced by a redirect. */
+    if (ev == MG_EV_HTTP_CHUNK) {
+      c->flags |= MG_F_DELETE_CHUNK;
+    }
+    return;
+  }
 
-	switch (ev) {
-	case MG_EV_CONNECT:
-		// sent when a new outbound connection is created
-		state->status = 0;
-		break;
-	case MG_EV_HTTP_CHUNK:
-		// esp8266 expects flash to be erased and written in blocks of 4kb, but webservers send
-		// chunks of data in whatever size they please. we thus buffer the data and write it
-		// whenever a block is full
-		if (hm->resp_code != 200) { break; }
+  switch (ev) {
+  case MG_EV_CONNECT:
+    if (*(int *)ev_data != 0) {
+      fail("connect_failed");
+    }
+    break;
+  case MG_EV_HTTP_CHUNK: {
+    c->flags |= MG_F_DELETE_CHUNK;
+    if (hm->resp_code != 200 || s_state != MG2X_STATE_DOWNLOADING) {
+      break;
+    }
+    const uint8_t *data = (const uint8_t *)hm->body.p;
+    mg2x_job_result job_result = mg2x_job_feed(&s_job, data, hm->body.len);
+    if (job_result != MG2X_JOB_OK) {
+      fail(mg2x_job_result_str(job_result));
+      c->flags |= MG_F_CLOSE_IMMEDIATELY;
+      break;
+    }
+    mg2x_writer_result writer_result = mg2x_writer_push(&s_writer, data, hm->body.len);
+    if (writer_result != MG2X_WRITER_OK) {
+      fail(mg2x_writer_result_str(writer_result));
+      c->flags |= MG_F_CLOSE_IMMEDIATELY;
+      break;
+    }
+    s_last_progress_micros = mgos_uptime_micros();
+    break;
+  }
+  case MG_EV_HTTP_REPLY:
+    c->flags |= MG_F_CLOSE_IMMEDIATELY;
+    if (s_state != MG2X_STATE_DOWNLOADING) {
+      break;
+    }
+    if (hm->resp_code == 301 || hm->resp_code == 302 || hm->resp_code == 307 ||
+        hm->resp_code == 308) {
+      struct mg_str *location = mg_get_http_header(hm, "Location");
+      if (location == NULL || s_redirects >= MG2X_MAX_REDIRECTS || location->len < 8 ||
+          strncmp(location->p, "http://", 7) != 0) {
+        fail("redirect");
+        break;
+      }
+      char url[256];
+      if (location->len >= sizeof(url)) {
+        fail("redirect");
+        break;
+      }
+      memcpy(url, location->p, location->len);
+      url[location->len] = '\0';
+      s_redirects++;
+      s_generation++;
+      s_conn = mg_connect_http(mgos_get_mgr(), http_cb, (void *)s_generation, url, NULL, NULL);
+      if (s_conn == NULL) {
+        fail("connect_failed");
+      }
+    } else if (hm->resp_code != 200) {
+      char reason[16];
+      snprintf(reason, sizeof(reason), "http_%d", hm->resp_code);
+      fail(reason);
+    }
+    break;
+  case MG_EV_CLOSE:
+    s_conn = NULL;
+    if (s_state == MG2X_STATE_DOWNLOADING) {
+      /* Also reached when the transfer was cut off: finish reports it. */
+      finish_download();
+    }
+    break;
+  default:
+    break;
+  }
+}
 
-		state->next_blk      = ( state->dest + state->recieved + (uint32) hm->body.len ) / BLOCK_SIZE;
-		state->left_in_block = ( (state->curr_blk + 1) * BLOCK_SIZE ) - state->dest - state->recieved;
+static void watchdog_cb(void *arg) {
+  (void)arg;
+  if (s_state == MG2X_STATE_DOWNLOADING &&
+      mgos_uptime_micros() - s_last_progress_micros > MG2X_STALL_TIMEOUT_MICROS) {
+    fail("timeout");
+    if (s_conn != NULL) {
+      s_conn->flags |= MG_F_CLOSE_IMMEDIATELY;
+    }
+  }
+}
 
-		if ( state->next_blk > state->curr_blk ) {
-			memcpy(&state->data[BLOCK_SIZE - state->left_in_block], hm->body.p, state->left_in_block);
+static void rpc_status(struct mg_rpc_request_info *ri, void *cb_arg, struct mg_rpc_frame_info *fi,
+                       struct mg_str args) {
+  mg_rpc_send_responsef(
+      ri,
+      "{protocol: %d, state: %Q, received: %lu, size: %lu, max_size: %lu, "
+      "error: %Q}",
+      MG2X_PROTOCOL_VERSION, state_str(s_state), (unsigned long)s_job.received_bytes,
+      (unsigned long)s_job.expected_size_bytes, (unsigned long)max_image_bytes(), s_error);
+  (void)cb_arg;
+  (void)fi;
+  (void)args;
+}
 
-			// check if the next write will overwrite the currently running program
-			if ( (state->next_blk * BLOCK_SIZE) > (*rboot_cfg).roms[(*rboot_cfg).current_rom] ) {
-				LOG(LL_ERROR, ("error! operation would overwrite the currently running program."));
-				c->flags |= MG_F_CLOSE_IMMEDIATELY;
-				state->status = 500;
-				break;
-			}
+static void rpc_flash(struct mg_rpc_request_info *ri, void *cb_arg, struct mg_rpc_frame_info *fi,
+                      struct mg_str args) {
+  char *url = NULL;
+  char *sha256 = NULL;
+  unsigned long size_bytes = 0;
+  json_scanf(args.p, args.len, ri->args_fmt, &url, &size_bytes, &sha256);
 
-			if ( spi_flash_erase_sector(state->curr_blk) != 0 ) {
-				LOG(LL_ERROR, ("flash delete error! abort at %lu recieved bytes.", state->recieved));
-				c->flags |= MG_F_CLOSE_IMMEDIATELY;
-				state->status = 500;
-				break;
-			}
-			if ( spi_flash_write( state->curr_blk * BLOCK_SIZE, (uint32 *) state->data, BLOCK_SIZE) != 0 ) {
-				LOG(LL_ERROR, ("flash write error! abort at %lu recieved bytes.", state->recieved));
-				c->flags |= MG_F_CLOSE_IMMEDIATELY;
-				state->status = 500;
-				break;
-			}
-			state->curr_blk = state->next_blk;
-
-			memcpy(&state->data[0], hm->body.p + state->left_in_block, hm->body.len - state->left_in_block);
-		} else {
-			memcpy(&state->data[BLOCK_SIZE - state->left_in_block], hm->body.p, hm->body.len);
-		}
-		state->recieved += (uint32) hm->body.len;
-		c->flags |= MG_F_DELETE_CHUNK;
-		break;
-	case MG_EV_HTTP_REPLY:
-		if (hm->resp_code == 302) {
-			// follow http redirect ...
-			for (int i = 0; i < MG_MAX_HTTP_HEADERS; i++) {
-				if ( mg_strcasecmp(hm->header_names[i], mg_mk_str("location") ) == 0 ) {
-					LOG(LL_DEBUG, ("302 redirect to %.*s", hm->header_values[i].len, hm->header_values[i].p));
-
-					char *url;
-					asprintf(&url, "%.*s", hm->header_values[i].len, hm->header_values[i].p);
-					mg_connect_http(mgos_get_mgr(), http_cb, state, url, NULL, NULL);
-					break;
-				}
-			}
-		} else {
-			// ...or set status once file transfer is done
-			state->status = hm->resp_code;
-		}
-
-		c->flags |= MG_F_CLOSE_IMMEDIATELY;
-		break;
-	case MG_EV_CLOSE:
-		// executed upon close connection
-		LOG(LL_INFO, ("HTTP status is %d, recieved %lu bytes", state->status, state->recieved));
-		if (state->status == 200) {
-			// write last block
-			if ( spi_flash_erase_sector(state->curr_blk) != 0 ) {
-				LOG(LL_ERROR, ("flash delete error! abort at %lu recieved bytes.", state->recieved));
-				break;
-			}
-			state->left_in_block = ( (state->curr_blk + 1) * BLOCK_SIZE ) - state->dest - state->recieved;
-			if ( spi_flash_write( state->curr_blk * BLOCK_SIZE, (uint32 *) state->data, BLOCK_SIZE - state->left_in_block) != 0 ) {
-				LOG(LL_ERROR, ("flash write error! abort at %lu recieved bytes.", state->recieved));
-				break;
-			}
-			LOG(LL_DEBUG, ("last block dump done"));
-
-			// check if the next operation will overwrite the currently running program
-			if ( ((state->curr_blk + 3) * BLOCK_SIZE) > (*rboot_cfg).roms[(*rboot_cfg).current_rom] ) {
-				LOG(LL_ERROR, ("error! operation would overwrite the currently running program."));
-				break;
-			}
-
-			// we are going to overwrite the bootloader and boot config last
-			// in case something goes wrong. to do so, we first need to save
-			// respective blocks, so they don't get overwritten by the main
-			// copy process
-
-			// save bootloader block
-			block_copy(
-				(*rboot_cfg).roms[TEMP_STORAGE],
-				(state->curr_blk + 1) * BLOCK_SIZE,
-				BLOCK_SIZE
-			);
-
-			// save boot config block
-			block_copy(
-				(*rboot_cfg).roms[TEMP_STORAGE] + BOOT_CONFIG_ADDR,
-				(state->curr_blk + 2) * BLOCK_SIZE,
-				BLOCK_SIZE
-			);
-
-			// move everything between the bootloader and boot config
-			block_copy(
-				(*rboot_cfg).roms[TEMP_STORAGE] + BLOCK_SIZE,
-				BLOCK_SIZE,
-				BOOT_CONFIG_ADDR - BLOCK_SIZE
-			);
-
-			// move everything after boot config
-			block_copy(
-				(*rboot_cfg).roms[TEMP_STORAGE] + BOOT_CONFIG_ADDR + BLOCK_SIZE,
-				BOOT_CONFIG_ADDR + BLOCK_SIZE,
-				state->recieved - BOOT_CONFIG_ADDR - BLOCK_SIZE
-			);
-
-			// overwrite boot config
-			block_copy(
-				(state->curr_blk + 2) * BLOCK_SIZE,
-				BOOT_CONFIG_ADDR,
-				BLOCK_SIZE
-			);
-
-			// overwrite boot loader
-			block_copy(
-				(state->curr_blk + 1) * BLOCK_SIZE,
-				0,
-				BLOCK_SIZE
-			);
-
-			mgos_system_restart_after(200);
-		} else if (state->status == 0) {
-			LOG(LL_INFO, ("Following HTTP redirect..."));
-		} else {
-			LOG(LL_ERROR, ("HTTP response error: %d", state->status));
-		}
-		break;
-	}
-};
-
-/*
-	url	src url
-	dest	destination addess
-*/
-void download_file_to_flash(const char *url, uint32 dest) {
-	struct state *state;
-	if ((state = calloc(1, sizeof(*state))) == NULL) {
-		LOG(LL_ERROR, ("out of memory"));
-		return;
-	}
-	state->dest     = dest;
-	state->recieved = 0;
-	state->curr_blk = dest / BLOCK_SIZE;
-
-	LOG(LL_DEBUG, ("fetching %s to 0x%lx", url, dest));
-	mg_connect_http(mgos_get_mgr(), http_cb, state, url, NULL, NULL);
-	return;
-};
-
-// if we are online, lets download and flash the target firmware
-static void online_cb(int ev, void *evd, void *arg) {
-	if ( ev == MGOS_NET_EV_IP_ACQUIRED ) {
-		LOG(LL_INFO, ("device is online, downloading target firmware"));
-		download_file_to_flash(mgos_sys_config_get_mg2x_url(), (*rboot_cfg).roms[TEMP_STORAGE] );
-	}
-	(void) evd;
-	(void) arg;
+  if (s_state == MG2X_STATE_DOWNLOADING || s_state == MG2X_STATE_INSTALLING) {
+    mg_rpc_send_errorf(ri, 409, "busy");
+  } else {
+    mg2x_job_result job_result = mg2x_job_begin(&s_job, url, (uint32_t)size_bytes,
+                                                min_image_bytes(), max_image_bytes(), sha256);
+    mg2x_writer_result writer_result = MG2X_WRITER_OK;
+    if (job_result == MG2X_JOB_OK) {
+      mg2x_flash_ops ops = {flash_erase, flash_write, NULL};
+      writer_result = mg2x_writer_init(&s_writer, ops, staging_address(), running_address());
+    }
+    if (job_result != MG2X_JOB_OK) {
+      mg_rpc_send_errorf(ri, 400, "%s", mg2x_job_result_str(job_result));
+    } else if (writer_result != MG2X_WRITER_OK) {
+      mg_rpc_send_errorf(ri, 500, "%s", mg2x_writer_result_str(writer_result));
+    } else {
+      LOG(LL_INFO, ("flash job: %s (%lu bytes)", url, size_bytes));
+      s_error[0] = '\0';
+      s_redirects = 0;
+      s_generation++;
+      s_last_progress_micros = mgos_uptime_micros();
+      s_state = MG2X_STATE_DOWNLOADING;
+      s_conn = mg_connect_http(mgos_get_mgr(), http_cb, (void *)s_generation, url, NULL, NULL);
+      if (s_conn == NULL) {
+        fail("connect_failed");
+      }
+      mg_rpc_send_responsef(ri, "{started: %B}", s_conn != NULL);
+    }
+  }
+  free(url);
+  free(sha256);
+  (void)cb_arg;
+  (void)fi;
 }
 
 enum mgos_app_init_result mgos_app_init(void) {
-	// get current bootloader configuration
-	rboot_cfg = get_rboot_config();
+  s_rboot_cfg = get_rboot_config();
 
-	// if we are running from app0, move flash content to app1 (and fs0 -> fs1) and reboot
-	if ( (*rboot_cfg).current_rom == 0 ) {
-		LOG(LL_INFO, ("FW booted from app0, copy to app1 and reboot"));
-		block_copy( (*rboot_cfg).roms[0],         (*rboot_cfg).roms[1],         (*rboot_cfg).roms_sizes[0] );
-		block_copy( (*rboot_cfg).fs_addresses[0], (*rboot_cfg).fs_addresses[1], (*rboot_cfg).fs_sizes[0] );
+  if (s_rboot_cfg->current_rom == MG2X_STAGING_ROM) {
+    /* Move ourselves into slot 1 so slot 0 becomes the staging area. */
+    LOG(LL_INFO, ("booted from slot 0, moving to slot 1"));
+    bool ok = block_copy(s_rboot_cfg->roms[0], s_rboot_cfg->roms[1], s_rboot_cfg->roms_sizes[0]) &&
+              block_copy(s_rboot_cfg->fs_addresses[0], s_rboot_cfg->fs_addresses[1],
+                         s_rboot_cfg->fs_sizes[0]);
+    if (ok) {
+      s_rboot_cfg->current_rom = MG2X_RUNNING_ROM;
+      s_rboot_cfg->previous_rom = MG2X_STAGING_ROM;
+      s_rboot_cfg->fw_updated = 1;
+      s_rboot_cfg->is_first_boot = 1;
+      rboot_set_config(s_rboot_cfg);
+      mgos_system_restart_after(200);
+    }
+    return MGOS_APP_INIT_SUCCESS;
+  }
 
-		// update bootloader configuration
-		(*rboot_cfg).current_rom   = 1;
-		(*rboot_cfg).previous_rom  = 0;
-		(*rboot_cfg).fw_updated    = 1;
-		(*rboot_cfg).is_first_boot = 1;
-
-		rboot_set_config(rboot_cfg);
-
-		mgos_system_restart_after(200);
-	} else {
-		LOG(LL_INFO, ("FW booted from app1, waiting for network connection"));
-		mgos_event_add_group_handler(MGOS_EVENT_GRP_NET, online_cb, NULL);
-	}
-	return MGOS_APP_INIT_SUCCESS;
+  LOG(LL_INFO,
+      ("ready, waiting for MG2X.Flash (max image %lu bytes)", (unsigned long)max_image_bytes()));
+  mg_rpc_add_handler(mgos_rpc_get_global(), "MG2X.Status", "", rpc_status, NULL);
+  mg_rpc_add_handler(mgos_rpc_get_global(), "MG2X.Flash", "{url: %Q, size: %lu, sha256: %Q}",
+                     rpc_flash, NULL);
+  mgos_set_timer(MG2X_WATCHDOG_INTERVAL_MS, MGOS_TIMER_REPEAT, watchdog_cb, NULL);
+  return MGOS_APP_INIT_SUCCESS;
 }

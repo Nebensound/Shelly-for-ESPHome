@@ -1,7 +1,7 @@
-author: mark dornbach <mark@dornbach.io>
-description: a minimal firmware for ota flashing tasmota from mongoose os
+author: Nebensound (based on mgos-to-tasmota by mark dornbach <mark@dornbach.io>)
+description: intermediate firmware that installs a user-built ESPHome image from Shelly Gen1 stock firmware, driven by the shelly2esphome CLI
 platform: esp8266
-version: 0.4.6
+version: 0.5.0
 
 libs_version: ${mos.version}
 modules_version: ${mos.version}
@@ -9,58 +9,36 @@ mongoose_os_version: ${mos.version}
 manifest_version: 2020-01-29
 sources: [src]
 filesystem: [fs]
-tags: [c, tuya, tasmota, mongoose]
+tags: [c, esphome, shelly, mongoose]
 
-# Custom configuration
+# The Wi-Fi credentials are taken over from the stock firmware's configuration.
 config_schema:
-  #### sys ####
   - ["debug.level", 2] # 0 = ERROR, 1 = WARN, 2 = INFO, 3+ = DEBUG
-  #### wifi ####
   - ["wifi.ap.enable", false]
   - ["wifi.sta.enable", true] # join wifi as client
   - ["sta_connect_timeout", 30] # timeout for wifi connection / seconds
   - ["wifi.sta1.ssid", "mgos-recover"] # fallback SSID
   - ["wifi.sta1.pass", "RJoPuKC3u5"] # fallback password
-  - ["mg2x", "o", { "title": "Settings for this firmware" }]
 
-# External libs
 libs:
-  - origin: https://github.com/mongoose-os-libs/boards # board definitions library
+  - origin: https://github.com/mongoose-os-libs/boards # board definitions
+  - origin: https://github.com/mongoose-os-libs/http-server # serves /rpc and /update
+  - origin: https://github.com/mongoose-os-libs/rpc-common # RPC over HTTP (MG2X.*, Sys.GetInfo)
   - origin: https://github.com/mongoose-os-libs/ota-common # OTA support
-  - origin: https://github.com/mongoose-os-libs/rpc-common # shared RPC API
-  - origin: https://github.com/mongoose-os-libs/rpc-uart # RPC via serial console
-  - origin: https://github.com/mongoose-os-libs/rpc-service-config # manage device configuration remotely
-  - origin: https://github.com/mongoose-os-libs/ca-bundle # CA certificates
-  - origin: https://github.com/mongoose-os-libs/ota-http-server # local OTA update via HTTP POST
+  - origin: https://github.com/mongoose-os-libs/ota-http-server # recovery: POST /update with a stock firmware ZIP
 
 conds:
-  - when: build_vars.TARGETFW == "tasmota"
+  # The dimmers talk to their STM32 co-processor over UART0; keep it silent.
+  - when: build_vars.MODEL == "ShellyDimmer1"
     apply:
       config_schema:
-        - [
-            "mg2x.url",
-            "s",
-            "https://ota.tasmota.com/tasmota/release/tasmota.bin",
-            { "title": "URL of target firmware" },
-          ]
-  - when: build_vars.TARGETFW == "haa"
+        - ["debug.stdout_uart", -1]
+        - ["debug.stderr_uart", -1]
+  - when: build_vars.MODEL == "ShellyDimmer2"
     apply:
       config_schema:
-        - [
-            "mg2x.url",
-            "s",
-            "https://github.com/RavenSystem/haa/releases/latest/download/fullhaaboot.bin",
-            { "title": "URL of target firmware" },
-          ]
-  - when: build_vars.TARGETFW == "espurna"
-    apply:
-      config_schema:
-        - [
-            "mg2x.url",
-            "s",
-            "https://github.com/xoseperez/espurna/releases/latest/download/espurna-1.14.1-espurna-base-1MB.bin",
-            { "title": "URL of target firmware" },
-          ]
+        - ["debug.stdout_uart", -1]
+        - ["debug.stderr_uart", -1]
   - when: build_vars.MODEL == "Shelly1"
     apply:
       name: switch1

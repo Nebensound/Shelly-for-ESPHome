@@ -8,4 +8,8 @@ devices/.esphome/
 secrets.yaml
 devices/secrets.yaml
 output/
-devices/.gitignore
+devices/.gitignoremigration_firmware/test/build/
+migration_firmware/build/
+migration_firmware/deps/
+*.gcda
+*.gcno
