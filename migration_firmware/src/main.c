@@ -24,8 +24,8 @@
 #include "spi_flash.h"
 #include "esp_rboot.h"
 
-#include "job.h"
-#include "writer.h"
+#include "mg2x_job.h"
+#include "mg2x_writer.h"
 
 #define MG2X_PROTOCOL_VERSION 1
 #define MG2X_STAGING_ROM 0

@@ -13,7 +13,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#include "sha256.h"
+#include "mg2x_sha256.h"
 
 /* First byte of every ESP8266 application image. */
 #define MG2X_IMAGE_MAGIC 0xE9u

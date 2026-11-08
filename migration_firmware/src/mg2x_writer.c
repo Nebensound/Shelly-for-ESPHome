@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-3.0-only
  */
-#include "writer.h"
+#include "mg2x_writer.h"
 
 #include <string.h>
 

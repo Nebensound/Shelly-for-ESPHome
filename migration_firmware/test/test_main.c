@@ -8,9 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../src/job.h"
-#include "../src/sha256.h"
-#include "../src/writer.h"
+#include "../src/mg2x_job.h"
+#include "../src/mg2x_sha256.h"
+#include "../src/mg2x_writer.h"
 
 static int s_failures = 0;
 
