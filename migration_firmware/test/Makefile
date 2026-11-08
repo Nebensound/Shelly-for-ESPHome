@@ -5,7 +5,7 @@
 #   make coverage  run the tests with gcov and enforce 100% line/branch/function coverage
 
 CC ?= cc
-SRC := $(abspath ../src/sha256.c ../src/job.c ../src/writer.c)
+SRC := $(abspath ../src/mg2x_sha256.c ../src/mg2x_job.c ../src/mg2x_writer.c)
 WARNINGS := -Wall -Wextra -Werror -Wconversion -Wsign-conversion -Wshadow -Wformat=2 -Wpedantic
 CFLAGS := -std=c11 -O1 -g $(WARNINGS)
 BUILD := build
