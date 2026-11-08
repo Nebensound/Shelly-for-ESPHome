@@ -11,8 +11,16 @@ sources: [src]
 filesystem: [fs]
 tags: [c, esphome, shelly, mongoose]
 
-# The Wi-Fi credentials are taken over from the stock firmware's configuration.
+# The Wi-Fi credentials are taken over from the stock firmware's user
+# configuration (conf9.json). conf_acl limits what that file may override, so
+# stock settings such as HTTP authentication, a disabled RPC endpoint or a
+# changed HTTP port can never make this firmware unreachable.
 config_schema:
+  - ["conf_acl", "wifi.sta.*,device.*"]
+  - ["http.enable", true]
+  - ["http.listen_addr", "80"]
+  - ["rpc.enable", true]
+  - ["rpc.http_enable", true]
   - ["debug.level", 2] # 0 = ERROR, 1 = WARN, 2 = INFO, 3+ = DEBUG
   - ["wifi.ap.enable", false]
   - ["wifi.sta.enable", true] # join wifi as client
