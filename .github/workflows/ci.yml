@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  migration-firmware-host-tests:
+    name: Migration firmware – host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y clang-format gcovr
+      - name: Formatting
+        run: clang-format --dry-run --Werror migration_firmware/src/*.c migration_firmware/src/*.h migration_firmware/test/*.c
+      - name: Tests with ASan/UBSan
+        run: make -C migration_firmware/test check
+      - name: Coverage (100% lines, branches, functions)
+        run: make -C migration_firmware/test coverage
+
+  migration-firmware:
+    name: Migration firmware – ${{ matrix.model }}
+    needs: migration-firmware-host-tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        model:
+          - Shelly1
+          - Shelly1PM
+          - Shelly1L
+          - Shelly2
+          - Shelly25
+          - ShellyPlugS
+          - ShellyPlugUS
+          - ShellyRGBW2
+          - ShellyDimmer1
+          - ShellyDimmer2
+          - ShellyEM
+          - ShellyBulb
+          - ShellyVintage
+          - ShellyDuo
+          - ShellyDuoRGBW
+          - ShellyI3
+          - ShellyUni
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with mos
+        uses: yaourdt/mongoose-os-action@v2.0.2
+        with:
+          mos-yml-path: migration_firmware
+          platform: esp8266
+          build-args: --build-var MODEL=${{ matrix.model }}
+      - name: Install PyYAML
+        run: sudo apt-get update && sudo apt-get install -y python3-yaml
+      - name: Verify package manifest
+        env:
+          MODEL: ${{ matrix.model }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys, zipfile
+          import yaml
+
+          model = os.environ["MODEL"]
+          conds = yaml.safe_load(open("migration_firmware/mos.yml"))["conds"]
+          expected = next(
+              c["apply"]["name"] for c in conds
+              if c["when"] == f'build_vars.MODEL == "{model}"' and "name" in c["apply"]
+          )
+          with zipfile.ZipFile("migration_firmware/build/fw.zip") as package:
+              name = next(n for n in package.namelist() if n.endswith("manifest.json"))
+              manifest = json.loads(package.read(name))
+          print(f"manifest name={manifest['name']} platform={manifest['platform']} expected={expected}")
+          if manifest["name"] != expected or manifest["platform"] != "esp8266":
+              sys.exit("manifest does not match the model")
+          EOF
+      - name: Rename package
+        run: mv migration_firmware/build/fw.zip "mg2esphome-${{ matrix.model }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mg2esphome-${{ matrix.model }}
+          path: mg2esphome-${{ matrix.model }}.zip
+          if-no-files-found: error
+
+  cli:
+    name: CLI – checks and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --all-features --locked
+      - name: Release build and smoke test outside the source tree
+        run: |
+          cargo build --release --locked
+          cp target/release/shelly2esphome "$RUNNER_TEMP/"
+          cd "$RUNNER_TEMP"
+          ./shelly2esphome --version
+          ./shelly2esphome --help
+
+  cli-msrv:
+    name: CLI – MSRV
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85
+      - run: cargo check --workspace --all-targets --locked
+
+  cli-coverage:
+    name: CLI – coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Coverage gate (100% regions, lines, functions)
+        run: cargo llvm-cov --workspace --all-features --locked --fail-under-regions 100 --fail-under-lines 100 --fail-under-functions 100
+
+  cli-macos:
+    name: CLI – macOS binary
+    needs: cli
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - name: Build universal binary
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output shelly2esphome \
+            target/aarch64-apple-darwin/release/shelly2esphome \
+            target/x86_64-apple-darwin/release/shelly2esphome
+          ./shelly2esphome --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shelly2esphome-macos-universal
+          path: shelly2esphome
+          if-no-files-found: error
