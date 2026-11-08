@@ -162,7 +162,11 @@ impl DeviceClient {
     }
 
     fn get(&self, path: &str) -> reqwest::RequestBuilder {
-        let request = self.http.get(format!("{}{path}", self.base_url));
+        self.get_url(format!("{}{path}", self.base_url))
+    }
+
+    fn get_url(&self, url: impl reqwest::IntoUrl) -> reqwest::RequestBuilder {
+        let request = self.http.get(url);
         match &self.credentials {
             Some(credentials) => request.basic_auth(&credentials.user, Some(&credentials.password)),
             None => request,
@@ -201,7 +205,10 @@ impl DeviceClient {
     /// # Errors
     /// Fails if the device refuses the request.
     pub async fn start_stock_ota(&self, package_url: &str) -> Result<(), DeviceError> {
-        let response = self.get("/ota").query(&[("url", package_url)]).send().await?;
+        let mut url = reqwest::Url::parse(&format!("{}/ota", self.base_url))
+            .map_err(|error| DeviceError::Rejected(format!("ungültige Geräteadresse: {error}")))?;
+        url.query_pairs_mut().append_pair("url", package_url);
+        let response = self.get_url(url).send().await?;
         match response.status().as_u16() {
             200 => Ok(()),
             401 => Err(DeviceError::AuthRequired),
