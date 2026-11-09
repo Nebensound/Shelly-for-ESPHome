@@ -245,7 +245,7 @@ async fn flash_command(
     let package = match migration {
         Some(path) => {
             let bytes =
-                std::fs::read(path).with_context(|| format!("{} nicht lesbar", path.display()))?;
+                std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
             Some(MigrationPackage::parse(bytes)?)
         }
         None => None,

@@ -284,7 +284,7 @@ impl DeviceClient {
             Ok(FlashStarted { started: false }) => {
                 Err(DeviceError::Rejected("connect_failed".into()))
             }
-            Err(error) => Err(DeviceError::Rejected(format!("unerwartete Antwort: {error}"))),
+            Err(error) => Err(DeviceError::Rejected(format!("unexpected answer: {error}"))),
         }
     }
 }
