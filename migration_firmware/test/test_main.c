@@ -299,8 +299,7 @@ static void test_writer_pads_unaligned_tails(void) {
     CHECK(writer != NULL);
     uint32_t base = 2u * MG2X_SECTOR_BYTES;
     uint32_t total = MG2X_SECTOR_BYTES + tail;
-    CHECK(mg2x_writer_init(writer, ops_for(flash), base, 8u * MG2X_SECTOR_BYTES) ==
-          MG2X_WRITER_OK);
+    CHECK(mg2x_writer_init(writer, ops_for(flash), base, 8u * MG2X_SECTOR_BYTES) == MG2X_WRITER_OK);
     CHECK(mg2x_writer_push(writer, s_image, MG2X_SECTOR_BYTES) == MG2X_WRITER_OK);
     CHECK(mg2x_writer_push(writer, &s_image[5000], tail) == MG2X_WRITER_OK);
     CHECK(mg2x_writer_flush(writer) == MG2X_WRITER_OK);
