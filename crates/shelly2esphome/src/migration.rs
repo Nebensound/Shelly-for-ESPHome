@@ -21,6 +21,9 @@ pub enum PackageError {
     /// `manifest.json` could not be read or parsed.
     #[error("manifest.json im Migrationspaket ist ungültig: {0}")]
     Manifest(String),
+    /// A binary inside the archive could not be read (e.g. corrupted data).
+    #[error("eine Datei im Migrationspaket ist beschädigt: {0}")]
+    ReadEntry(String),
     /// The package was built for another platform.
     #[error("das Migrationspaket ist für die Plattform {0:?} gebaut, nicht für esp8266")]
     WrongPlatform(String),
@@ -69,7 +72,7 @@ fn find_protocol_marker(
         let mut content = Vec::new();
         entry
             .read_to_end(&mut content)
-            .map_err(|error| PackageError::Manifest(error.to_string()))?;
+            .map_err(|error| PackageError::ReadEntry(error.to_string()))?;
         if let Some(position) =
             content.windows(MARKER_PREFIX.len()).position(|window| window == MARKER_PREFIX)
         {
@@ -237,5 +240,23 @@ pub(crate) mod tests {
         assert!(matches!(error, PackageError::WrongPlatform(ref p) if p == "esp32"));
         assert!(error.to_string().contains("esp32"));
         assert!(PackageError::MissingManifest.to_string().contains("manifest.json"));
+    }
+
+    #[test]
+    fn reports_a_corrupted_binary_as_such() {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        writer.start_file("manifest.json", stored).expect("start manifest");
+        writer.write_all(br#"{"name":"switch1pm","platform":"esp8266"}"#).expect("manifest");
+        writer.start_file("fw.bin", stored).expect("start bin");
+        writer.write_all(b"shelly2esphome-mg2x-protocol=2 PAYLOAD").expect("bin");
+        let mut zip = writer.finish().expect("finish").into_inner();
+        // Flip a data byte: the entry's CRC-32 no longer matches.
+        let at = zip.windows(7).position(|w| w == b"PAYLOAD").expect("payload");
+        zip[at] ^= 0x01;
+        let error = MigrationPackage::parse(zip).expect_err("corrupted");
+        assert!(matches!(error, PackageError::ReadEntry(_)));
+        assert!(error.to_string().contains("beschädigt"));
     }
 }

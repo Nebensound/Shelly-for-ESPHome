@@ -21,6 +21,7 @@
  *   roms[1]            this firmware (running, never written)
  */
 #include <limits.h>
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "mgos.h"
@@ -108,8 +109,17 @@ static uint32_t min_image_bytes(void) {
   return (uint32_t)BOOT_CONFIG_ADDR + 2u * MG2X_SECTOR_BYTES;
 }
 
+/* spi_flash_read/write need 4-byte aligned buffers, addresses and lengths.
+ * Enforce that here so a future caller cannot cause an unaligned access. */
+static bool flash_aligned(uint32_t address, const uint8_t *data, uint32_t len_bytes) {
+  return ((address | len_bytes | (uint32_t)(uintptr_t)data) & 3u) == 0u;
+}
+
 static int flash_read(void *ctx, uint32_t address, uint8_t *data, uint32_t len_bytes) {
   (void)ctx;
+  if (!flash_aligned(address, data, len_bytes)) {
+    return 1;
+  }
   return spi_flash_read(address, (uint32 *)(uintptr_t)data, len_bytes) == SPI_FLASH_RESULT_OK ? 0
                                                                                               : 1;
 }
@@ -121,7 +131,9 @@ static int flash_erase(void *ctx, uint32_t sector_index) {
 
 static int flash_write(void *ctx, uint32_t address, const uint8_t *data, uint32_t len_bytes) {
   (void)ctx;
-  /* All callers pass 4-byte aligned buffers and lengths that are multiples of 4. */
+  if (!flash_aligned(address, data, len_bytes)) {
+    return 1;
+  }
   return spi_flash_write(address, (uint32 *)(uintptr_t)data, len_bytes) == SPI_FLASH_RESULT_OK ? 0
                                                                                                : 1;
 }
@@ -273,9 +285,11 @@ static void rpc_flash(struct mg_rpc_request_info *ri, void *cb_arg, struct mg_rp
   char *url = NULL;
   char *sha256 = NULL;
   unsigned long size_bytes = 0;
-  json_scanf(args.p, args.len, ri->args_fmt, &url, &size_bytes, &sha256);
+  int parsed = json_scanf(args.p, args.len, ri->args_fmt, &url, &size_bytes, &sha256);
 
-  if (s_state == MG2X_STATE_DOWNLOADING || s_state == MG2X_STATE_INSTALLING) {
+  if (parsed != 3 || url == NULL || sha256 == NULL) {
+    mg_rpc_send_errorf(ri, 400, "bad_request");
+  } else if (s_state == MG2X_STATE_DOWNLOADING || s_state == MG2X_STATE_INSTALLING) {
     mg_rpc_send_errorf(ri, 409, "busy");
 #if ULONG_MAX > UINT32_MAX
   } else if (size_bytes > UINT32_MAX) {

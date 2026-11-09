@@ -100,6 +100,9 @@ async fn serve_file(
         [
             (axum::http::header::CONTENT_TYPE, "application/octet-stream".to_owned()),
             (axum::http::header::CONTENT_LENGTH, total.to_string()),
+            // The image carries the Wi-Fi credentials: nothing may keep a copy.
+            (axum::http::header::CACHE_CONTROL, "no-store".to_owned()),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
         ],
         Body::from_stream(stream),
     )
@@ -228,8 +231,10 @@ mod tests {
     #[tokio::test]
     async fn serves_both_files_and_counts_bytes() {
         let server = server(Some("127.0.0.1".parse().expect("ip"))).await;
-        let body =
-            reqwest::get(server.url(IMAGE_PATH)).await.expect("get").bytes().await.expect("body");
+        let response = reqwest::get(server.url(IMAGE_PATH)).await.expect("get");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        let body = response.bytes().await.expect("body");
         assert_eq!(body.len(), 10_000);
         assert_eq!(server.image_stats().requests(), 1);
         assert_eq!(server.image_stats().sent_bytes(), 10_000);
