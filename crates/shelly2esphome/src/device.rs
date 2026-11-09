@@ -181,6 +181,9 @@ impl DeviceClient {
     /// Fails if the device is unreachable, needs a login, or runs unknown firmware.
     pub async fn identify(&self) -> Result<Firmware, DeviceError> {
         let response = self.get("/shelly").send().await?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(DeviceError::AuthRequired);
+        }
         if response.status().is_success() {
             if let Ok(info) = response.json::<StockInfo>().await {
                 let rssi_dbm = self.stock_rssi().await?;

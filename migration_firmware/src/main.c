@@ -20,6 +20,9 @@
  *   roms[0]            staging area          <- download target
  *   roms[1]            this firmware (running, never written)
  */
+#include <limits.h>
+#include <stdint.h>
+
 #include "mgos.h"
 #include "mgos_rpc.h"
 #include "frozen.h"
@@ -57,6 +60,9 @@ static mg2x_job s_job;
 static mg2x_writer s_writer;
 static char s_error[32] = "";
 static struct mg_connection *s_conn = NULL;
+/* Connection generation, passed to mg_connect_http() as user data. It is a
+ * uintptr_t so the round trip through void * is lossless; http_cb() only
+ * compares it and never dereferences it. */
 static uintptr_t s_generation = 0;
 static int s_redirects = 0;
 static int64_t s_last_progress_micros = 0;
@@ -271,6 +277,11 @@ static void rpc_flash(struct mg_rpc_request_info *ri, void *cb_arg, struct mg_rp
 
   if (s_state == MG2X_STATE_DOWNLOADING || s_state == MG2X_STATE_INSTALLING) {
     mg_rpc_send_errorf(ri, 409, "busy");
+#if ULONG_MAX > UINT32_MAX
+  } else if (size_bytes > UINT32_MAX) {
+    /* Never let a truncating cast turn an oversized request into a valid one. */
+    mg_rpc_send_errorf(ri, 400, "%s", mg2x_job_result_str(MG2X_JOB_ERR_SIZE_TOO_LARGE));
+#endif
   } else {
     mg2x_job_result job_result = mg2x_job_begin(&s_job, url, (uint32_t)size_bytes,
                                                 min_image_bytes(), max_image_bytes(), sha256);

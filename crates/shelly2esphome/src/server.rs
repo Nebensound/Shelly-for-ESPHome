@@ -79,13 +79,14 @@ async fn serve_file(
     let request_id = file.stats.requests.fetch_add(1, Ordering::SeqCst) + 1;
     file.stats.sent_bytes.store(0, Ordering::SeqCst);
     let total = file.bytes.len();
-    let chunks: Vec<Bytes> = (0..total)
+    // Chunks are zero-copy slices of the shared buffer, created lazily.
+    let bytes = file.bytes.clone();
+    let chunks = (0..total)
         .step_by(CHUNK_BYTES)
-        .map(|start| file.bytes.slice(start..total.min(start + CHUNK_BYTES)))
-        .collect();
+        .map(move |start| bytes.slice(start..total.min(start + CHUNK_BYTES)));
     let stats = Arc::clone(&file.stats);
     let mut sent_by_this_response = 0_u64;
-    let stream = futures_util::stream::iter(chunks.into_iter().map(move |chunk| {
+    let stream = futures_util::stream::iter(chunks.map(move |chunk| {
         sent_by_this_response += chunk.len() as u64;
         if stats.requests.load(Ordering::SeqCst) == request_id {
             stats.sent_bytes.store(sent_by_this_response, Ordering::SeqCst);

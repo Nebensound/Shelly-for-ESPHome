@@ -39,6 +39,7 @@ struct Fake {
     device_type: &'static str,
     rssi: i32,
     auth_required: bool,
+    shelly_requires_auth: bool,
     ignore_ota: bool,
     stays_stock_after_ota: bool,
     state: MigrationState,
@@ -64,6 +65,7 @@ fn fake(mode: Mode) -> Fake {
         device_type: "SHDM-2",
         rssi: -60,
         auth_required: false,
+        shelly_requires_auth: false,
         ignore_ota: false,
         stays_stock_after_ota: false,
         state: MigrationState::Idle,
@@ -86,6 +88,9 @@ async fn shelly(State(shared): State<Shared>) -> Response {
     let fake = shared.lock().unwrap();
     if fake.mode != Mode::Stock {
         return StatusCode::NOT_FOUND.into_response();
+    }
+    if fake.shelly_requires_auth {
+        return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(serde_json::json!({
         "type": fake.device_type, "mac": "E8DB84D41F49", "auth": fake.auth_required,
@@ -509,6 +514,13 @@ async fn identifies_unknown_firmware_and_missing_login() {
 
     let mut device = fake(Mode::Stock);
     device.auth_required = true;
+    let (host, _shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None).unwrap();
+    assert!(matches!(client.identify().await, Err(DeviceError::AuthRequired)));
+
+    // Firmware variants that protect /shelly as well.
+    let mut device = fake(Mode::Stock);
+    device.shelly_requires_auth = true;
     let (host, _shared) = start_fake(device).await;
     let client = DeviceClient::new(&host, None).unwrap();
     assert!(matches!(client.identify().await, Err(DeviceError::AuthRequired)));
