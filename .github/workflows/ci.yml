@@ -3,11 +3,17 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  # Tests must not depend on a release download (crates/shelly2esphome/build.rs);
+  # the macOS job embeds the packages of this run via SHELLY2ESPHOME_PACKAGES_DIR.
+  SHELLY2ESPHOME_NO_DOWNLOAD: "1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -174,3 +180,35 @@ jobs:
           name: shelly2esphome-macos-universal
           path: shelly2esphome-macos-universal.tar.gz
           if-no-files-found: error
+
+  release:
+    name: Release
+    # Tag vX.Y.Z (= crate version): publishes the packages that
+    # `cargo install` builds download, plus the macOS binary.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [migration-firmware, cli-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the crate version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/shelly2esphome/Cargo.toml | head -1)
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mg2esphome-*
+          path: packages
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: shelly2esphome-macos-universal
+      - name: Bundle the packages
+        run: cd packages && zip -q ../mg2esphome-packages.zip mg2esphome-*.zip
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            mg2esphome-packages.zip packages/mg2esphome-*.zip shelly2esphome-macos-universal.tar.gz

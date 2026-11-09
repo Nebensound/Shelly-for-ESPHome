@@ -71,29 +71,47 @@ Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
 
 ### 2. Get the tool
 
-Download `shelly2esphome-macos-universal.tar.gz` from the artifacts of the CI
-run (Actions tab) and unpack it (`tar -xzf …`). This binary contains the
-migration packages of all supported models; `flash` detects the model and
-picks the matching one itself.
+The tool carries the migration packages (`mg2esphome-<Model>.zip`) of all
+supported models; `flash` detects the model and picks the matching one.
 
-Alternatively, install it with
-`cargo install --git https://github.com/Nebensound/Shelly-for-ESPHome shelly2esphome`.
-Such a build contains no migration packages: download `mg2esphome-<Model>.zip`
-from the CI artifacts and pass it with `--migration`. `shelly2esphome probe`
-tells you whether the package is built in and otherwise which file the device
-needs.
+- **macOS binary:** download `shelly2esphome-macos-universal.tar.gz` from a
+  [release](https://github.com/Nebensound/Shelly-for-ESPHome/releases) or
+  from the artifacts of a CI run, and unpack it (`tar -xzf …`).
+- **`cargo install`:**
+  `cargo install --git https://github.com/Nebensound/Shelly-for-ESPHome shelly2esphome`.
+  The build downloads the packages of the release that matches the crate
+  version (needs `curl`).
+- **Build the packages yourself** (needs
+  [`mos`](https://mongoose-os.com/docs/mongoose-os/quickstart/setup.md) and
+  Docker): `SHELLY2ESPHOME_BUILD_PACKAGES=1 cargo install --git …`, or
+  `scripts/build-packages.sh packages` followed by
+  `SHELLY2ESPHOME_PACKAGES_DIR=$PWD/packages cargo install --path crates/shelly2esphome`.
+
+Packages that do not speak the tool's protocol are not embedded. A build
+without packages still works; then pass the package with `--migration`.
+`shelly2esphome probe` tells you whether the package is built in.
 
 ### 3. Run the tool
 
 ```sh
-shelly2esphome probe 10.10.5.79
-shelly2esphome check firmware.bin
+shelly2esphome list 10.10.5.0/24          # find Shellys and see which can be flashed
+shelly2esphome probe 10.10.5.79           # details of one device
+shelly2esphome backup 10.10.5.79          # save the stock settings (flash does this too)
+shelly2esphome check firmware.bin         # check your firmware without a device
 shelly2esphome flash 10.10.5.79 --firmware firmware.bin --port 8266
 ```
 
-Before flashing, save the device's stock settings (`/settings`,
-`/settings/light/0` or `/settings/relay/0`, `/settings/actions`) if you want to
-reproduce them in ESPHome; they are lost afterwards.
+`list` (alias `detect`) asks every address of the given networks for
+`/shelly`; without an argument it scans the /24 of your computer. Devices in
+other VLANs need their network as argument. It only sends reading requests.
+
+`backup` saves the stock settings as JSON files (`/shelly`, `/status`,
+`/settings`, `/settings/actions` and the settings of every relay, light and
+roller) into a new directory `shelly-backup-<type>-<mac>-<UTC time>`. They are
+lost after the migration, so use them to reproduce your setup in ESPHome. The
+files can contain the device's own access point password. `flash` makes the
+same backup after the confirmation and before the first change
+(`--backup-dir`, `--no-backup`); if it fails, nothing is changed.
 
 `flash` shows a summary and asks for confirmation before it changes anything.
 It refuses to run when:
@@ -120,7 +138,7 @@ rule for the migration:
 
 Everything else (control via port 80, ESPHome detection via port 6053) is
 initiated by your computer. Remove the rule afterwards. If the device cannot
-reach your computer, `flash` stops with "Migrationspaket nicht abgeholt" and
+reach your computer, `flash` stops with "the device did not fetch the migration package" and
 nothing is changed. Set `--serve-ip` if the detected address of your computer
 is wrong.
 
@@ -176,9 +194,15 @@ it locally, run
 `mos build --local --platform esp8266 --build-var MODEL=Shelly1PM` in
 `migration_firmware/`.
 
-To embed the packages into a local CLI build like CI does, put all
-`mg2esphome-<Model>.zip` into one directory and build with
-`SHELLY2ESPHOME_PACKAGES_DIR=<directory> cargo build --release`.
+Where the CLI build takes the migration packages from is described in
+`crates/shelly2esphome/build.rs`: `SHELLY2ESPHOME_PACKAGES_DIR`,
+`SHELLY2ESPHOME_BUILD_PACKAGES=1`, or the release download (switched off with
+`SHELLY2ESPHOME_NO_DOWNLOAD=1`, as in CI).
+
+Releases: push a tag `vX.Y.Z` that matches the crate version. CI then
+publishes `mg2esphome-packages.zip`, the single packages and the macOS binary.
+Bump the crate version whenever the migration protocol changes, so builds
+never download packages of another protocol.
 
 See [AGENTS.md](AGENTS.md) for architecture, invariants and conventions.
 

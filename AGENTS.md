@@ -15,10 +15,16 @@ live here were removed on purpose; do not reintroduce them.
   - `model.rs` maps device types to migration build names and stock app names.
   - `image.rs` validates ESP8266 images.
   - `migration.rs` validates the migration package.
-  - `embedded.rs` holds the migration packages that `build.rs` compiles in when
-    `SHELLY2ESPHOME_PACKAGES_DIR` is set (CI release binary: all models).
+  - `embedded.rs` holds the migration packages that `build.rs` compiles in:
+    from `SHELLY2ESPHOME_PACKAGES_DIR`, from `scripts/build-packages.sh`
+    (`SHELLY2ESPHOME_BUILD_PACKAGES=1`) or downloaded from the release
+    `v<crate version>`. Only packages of the current protocol are embedded.
     An explicit `--migration` always takes precedence; embedded packages pass
     the same validation as files.
+  - `protocol.rs` holds the protocol version and marker search; `build.rs`
+    includes it, so it must not import anything from the crate.
+  - `backup.rs` saves the stock settings; `discover.rs` scans networks for
+    `list`. Both only send reading requests.
   - `device.rs` holds the HTTP client for the stock and migration firmware.
   - `server.rs` is the local file server.
   - `flash.rs` holds the procedure and its safety checks.
@@ -40,9 +46,12 @@ live here were removed on purpose; do not reintroduce them.
 2. **A failed job never leaves the device unreachable.** The migration
    firmware keeps running and accepts a new `MG2X.Flash`.
 3. The CLI performs every refusal (model, package, signal, login, confirmation)
-   **before** the first request that changes the device.
+   and the backup of the stock settings **before** the first request that
+   changes the device.
 4. `MG2X_PROTOCOL_VERSION` and the marker `shelly2esphome-mg2x-protocol=N` in
-   `main.c` and `MIGRATION_PROTOCOL` in `device.rs` change together. The RPC
+   `main.c` and `MIGRATION_PROTOCOL` in `protocol.rs` change together, and
+   with them the crate version (builds download the release packages of
+   their own version). The RPC
    field names (`url`, `size`, `sha256`, `state`, `received`, `max_size`,
    `error`) and state names are the contract between both.
 5. The model table in `model.rs` mirrors the `conds` in
@@ -54,8 +63,7 @@ live here were removed on purpose; do not reintroduce them.
 
 ## Conventions
 
-- Code, comments, commits and documentation are in English. User-facing CLI
-  output is German.
+- Code, comments, commits, documentation and all CLI output are in English.
 - Conventional Commits. Branches are named `feat/…`, `fix/…` or `chore/…`.
 - Run the checks listed in the README before committing. CI runs the same
   checks.
