@@ -112,7 +112,7 @@ static uint32_t min_image_bytes(void) {
 /* spi_flash_read/write need 4-byte aligned buffers, addresses and lengths.
  * Enforce that here so a future caller cannot cause an unaligned access. */
 static bool flash_aligned(uint32_t address, const uint8_t *data, uint32_t len_bytes) {
-  return ((address | len_bytes | (uint32_t)(uintptr_t)data) & 3u) == 0u;
+  return ((address | len_bytes) & 3u) == 0u && ((uintptr_t)data & (uintptr_t)3u) == 0u;
 }
 
 static int flash_read(void *ctx, uint32_t address, uint8_t *data, uint32_t len_bytes) {
@@ -126,6 +126,9 @@ static int flash_read(void *ctx, uint32_t address, uint8_t *data, uint32_t len_b
 
 static int flash_erase(void *ctx, uint32_t sector_index) {
   (void)ctx;
+  if (sector_index > UINT16_MAX) {
+    return 1; /* the SDK takes a 16-bit index; never let it wrap */
+  }
   return spi_flash_erase_sector((uint16)sector_index) == SPI_FLASH_RESULT_OK ? 0 : 1;
 }
 
