@@ -135,21 +135,22 @@ fn walk_image(
     part: Part,
     zeroed: &std::ops::Range<usize>,
 ) -> Result<usize, ImageError> {
-    let header = bytes.get(start..start + HEADER_BYTES).ok_or(ImageError::Truncated { part })?;
-    if header[0] != IMAGE_MAGIC {
-        return Err(ImageError::BadMagic { part, found: header[0] });
+    // Missing bytes read as 0, which fails the magic or segment count check.
+    let magic = bytes.get(start).copied().unwrap_or(0);
+    if magic != IMAGE_MAGIC {
+        return Err(ImageError::BadMagic { part, found: magic });
     }
-    let count = header[1];
+    let count = bytes.get(start + 1).copied().unwrap_or(0);
     if count == 0 || count > MAX_SEGMENTS {
         return Err(ImageError::BadSegmentCount { part, count });
     }
     let mut checksum = XOR_SEED;
     let mut position = start + HEADER_BYTES;
     for _ in 0..count {
-        let length = read_u32(bytes, position + 4).ok_or(ImageError::Truncated { part })?;
+        // A missing segment header reads as an endless segment.
+        let length = read_u32(bytes, position + 4).unwrap_or(u32::MAX);
         let data_start = position + HEADER_BYTES;
-        let data_end =
-            data_start.checked_add(length as usize).ok_or(ImageError::Truncated { part })?;
+        let data_end = data_start.saturating_add(length as usize);
         if data_end > end_limit {
             return Err(ImageError::Truncated { part });
         }
@@ -310,135 +311,5 @@ pub mod synthetic {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn crc_matches_the_elf2bin_reference() {
-        // Reference value from the Python implementation in esp8266/Arduino tools/elf2bin.py.
-        assert_eq!(crc_eboot(b"123456789", &(0..0)), 0x0376_E6E7);
-    }
-
-    #[test]
-    fn accepts_a_complete_image() {
-        let bytes = synthetic::image(MIN_IMAGE_BYTES + 12_345);
-        let image = FirmwareImage::parse(bytes.clone()).expect("valid image");
-        assert_eq!(image.len(), bytes.len());
-        assert!(!image.is_empty());
-        assert_eq!(image.bytes().len(), bytes.len());
-        assert_eq!(image.sha256_hex(), hex::encode(Sha256::digest(&bytes)));
-    }
-
-    #[test]
-    fn rejects_truncated_and_corrupted_images() {
-        let good = synthetic::image(MIN_IMAGE_BYTES + 12_345);
-
-        let truncated = good[..good.len() - 100].to_vec();
-        assert_eq!(
-            FirmwareImage::parse(truncated).err(),
-            Some(ImageError::Truncated { part: Part::Application })
-        );
-
-        let mut flipped = good.clone();
-        flipped[APP_OFFSET + 5000] ^= 0x01;
-        assert_eq!(
-            FirmwareImage::parse(flipped).err(),
-            Some(ImageError::BadChecksum { part: Part::Application })
-        );
-
-        let mut boot_flipped = good.clone();
-        boot_flipped[100] ^= 0x01;
-        assert_eq!(
-            FirmwareImage::parse(boot_flipped).err(),
-            Some(ImageError::BadChecksum { part: Part::Bootloader })
-        );
-
-        let mut trailing = good.clone();
-        trailing.extend_from_slice(&[0; 32]);
-        assert_eq!(FirmwareImage::parse(trailing).err(), Some(ImageError::TrailingData(32)));
-
-        let mut crc = good.clone();
-        crc[CRC_VAL_OFFSET] ^= 0x01;
-        assert_eq!(FirmwareImage::parse(crc).err(), Some(ImageError::BadCrc));
-
-        let mut length = good.clone();
-        length[CRC_LEN_OFFSET] ^= 0x01;
-        assert_eq!(FirmwareImage::parse(length).err(), Some(ImageError::BadCrc));
-    }
-
-    #[test]
-    fn rejects_files_that_are_no_esp8266_images() {
-        let good = synthetic::image(MIN_IMAGE_BYTES);
-
-        let mut gz = good.clone();
-        gz[..2].copy_from_slice(&GZIP_MAGIC);
-        assert_eq!(FirmwareImage::parse(gz).err(), Some(ImageError::Compressed));
-        assert_eq!(
-            FirmwareImage::parse(good[..MIN_IMAGE_BYTES - 1].to_vec()).err(),
-            Some(ImageError::TooSmall { actual: MIN_IMAGE_BYTES - 1 })
-        );
-        assert_eq!(
-            FirmwareImage::parse(vec![0; MAX_IMAGE_BYTES + 1]).err(),
-            Some(ImageError::TooLarge { actual: MAX_IMAGE_BYTES + 1 })
-        );
-
-        let mut magic = good.clone();
-        magic[0] = 0;
-        assert_eq!(
-            FirmwareImage::parse(magic).err(),
-            Some(ImageError::BadMagic { part: Part::Bootloader, found: 0 })
-        );
-        let mut app_magic = good.clone();
-        app_magic[APP_OFFSET] = 0x12;
-        assert_eq!(
-            FirmwareImage::parse(app_magic).err(),
-            Some(ImageError::BadMagic { part: Part::Application, found: 0x12 })
-        );
-        for count in [0_u8, 17] {
-            let mut segments = good.clone();
-            segments[1] = count;
-            assert_eq!(
-                FirmwareImage::parse(segments).err(),
-                Some(ImageError::BadSegmentCount { part: Part::Bootloader, count })
-            );
-        }
-
-        // A bootloader segment that reaches into the application sector.
-        let mut long_boot = good.clone();
-        long_boot[12..16].copy_from_slice(&5000_u32.to_le_bytes());
-        assert_eq!(
-            FirmwareImage::parse(long_boot).err(),
-            Some(ImageError::Truncated { part: Part::Bootloader })
-        );
-
-        let mut esp32 = good.clone();
-        esp32[4..8].copy_from_slice(&0x4008_0400_u32.to_le_bytes());
-        assert_eq!(FirmwareImage::parse(esp32).err(), Some(ImageError::NotEsp8266(0x4008_0400)));
-    }
-
-    #[test]
-    fn error_messages_are_specific() {
-        assert!(ImageError::Compressed.to_string().contains("gzip"));
-        assert!(ImageError::TooSmall { actual: 1 }.to_string().contains("too small"));
-        assert!(ImageError::TooLarge { actual: 1 }.to_string().contains("too large"));
-        assert!(
-            ImageError::BadMagic { part: Part::Bootloader, found: 0x12 }
-                .to_string()
-                .contains("bootloader: not an ESP firmware (byte 0x12")
-        );
-        assert!(
-            ImageError::BadSegmentCount { part: Part::Application, count: 0 }
-                .to_string()
-                .contains("application")
-        );
-        assert!(ImageError::NotEsp8266(0x4008_0400).to_string().contains("ESP32"));
-        assert!(
-            ImageError::Truncated { part: Part::Application }.to_string().contains("truncated")
-        );
-        assert!(
-            ImageError::BadChecksum { part: Part::Bootloader }.to_string().contains("corrupted")
-        );
-        assert!(ImageError::TrailingData(3).to_string().contains("3 more bytes"));
-        assert!(ImageError::BadCrc.to_string().contains("CRC"));
-    }
-}
+#[path = "unit_tests/image.rs"]
+mod tests;

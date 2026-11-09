@@ -6,6 +6,7 @@
 //! the bootloader and the application.
 
 pub mod backup;
+pub mod cli;
 pub mod device;
 pub mod discover;
 pub mod embedded;

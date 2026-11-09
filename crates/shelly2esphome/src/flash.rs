@@ -216,10 +216,8 @@ pub async fn resolve(host: &str) -> std::io::Result<SocketAddr> {
         return Ok(SocketAddr::new(ip, 80));
     }
     let query = if host.contains(':') { host.to_owned() } else { format!("{host}:80") };
-    tokio::net::lookup_host(query)
-        .await?
-        .next()
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, host.to_owned()))
+    let not_found = std::io::Error::new(std::io::ErrorKind::NotFound, host.to_owned());
+    tokio::net::lookup_host(query).await?.next().ok_or(not_found)
 }
 
 /// Local address used to reach `target` (no packet is sent).
@@ -232,7 +230,7 @@ pub fn local_ip_towards(target: IpAddr) -> std::io::Result<IpAddr> {
         0,
     ))?;
     socket.connect(SocketAddr::new(target, 80))?;
-    Ok(socket.local_addr()?.ip())
+    socket.local_addr().map(|address| address.ip())
 }
 
 /// Error reported by the migration firmware when the boot sectors are left broken.
@@ -459,7 +457,7 @@ pub async fn run(
             // The migration firmware always listens on its own port.
             let migration_host =
                 SocketAddr::new(device_address.ip(), options.migration_port).to_string();
-            let migration_client = DeviceClient::new(&migration_host, None)?;
+            let migration_client = DeviceClient::new(&migration_host, None);
             let status = wait_for_migration_firmware(&migration_client, &options.timeouts).await?;
             reporter.info("Migration firmware is running");
             (migration_client, status)
@@ -488,29 +486,5 @@ pub async fn run(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn resolves_all_host_forms() {
-        assert_eq!(resolve("10.10.5.78").await.expect("ip").to_string(), "10.10.5.78:80");
-        assert_eq!(resolve("10.10.5.78:8080").await.expect("ip:port").port(), 8080);
-        assert_eq!(resolve("localhost").await.expect("name").port(), 80);
-        assert_eq!(resolve("localhost:81").await.expect("name:port").port(), 81);
-        assert!(resolve("does-not-exist.invalid").await.is_err());
-    }
-
-    #[test]
-    fn local_ip_for_loopback_is_loopback() {
-        let ip = local_ip_towards(IpAddr::from([127, 0, 0, 1])).expect("route");
-        assert!(ip.is_loopback());
-    }
-
-    #[test]
-    fn default_options_are_conservative() {
-        let options = FlashOptions::default();
-        assert_eq!(options.min_rssi_dbm, -75);
-        assert!(!options.allow_weak_signal);
-        assert_eq!(options.esphome_port, 6053);
-    }
-}
+#[path = "unit_tests/flash.rs"]
+mod tests;

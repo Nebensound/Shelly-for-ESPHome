@@ -59,6 +59,26 @@ impl TransferStats {
     }
 }
 
+/// Byte accounting of one response; only the newest request reports progress.
+struct ResponseProgress {
+    stats: Arc<TransferStats>,
+    request_id: u64,
+    sent: u64,
+    total: u64,
+}
+
+impl ResponseProgress {
+    fn record(&mut self, chunk_bytes: usize) {
+        self.sent += chunk_bytes as u64;
+        if self.stats.requests.load(Ordering::SeqCst) == self.request_id {
+            self.stats.sent_bytes.store(self.sent, Ordering::SeqCst);
+        }
+        if self.sent == self.total {
+            self.stats.completed.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ServedFile {
     bytes: Bytes,
@@ -84,16 +104,14 @@ async fn serve_file(
     let chunks = (0..total)
         .step_by(CHUNK_BYTES)
         .map(move |start| bytes.slice(start..total.min(start + CHUNK_BYTES)));
-    let stats = Arc::clone(&file.stats);
-    let mut sent_by_this_response = 0_u64;
+    let mut progress = ResponseProgress {
+        stats: Arc::clone(&file.stats),
+        request_id,
+        sent: 0,
+        total: total as u64,
+    };
     let stream = futures_util::stream::iter(chunks.map(move |chunk| {
-        sent_by_this_response += chunk.len() as u64;
-        if stats.requests.load(Ordering::SeqCst) == request_id {
-            stats.sent_bytes.store(sent_by_this_response, Ordering::SeqCst);
-        }
-        if sent_by_this_response == total as u64 {
-            stats.completed.fetch_add(1, Ordering::SeqCst);
-        }
+        progress.record(chunk.len());
         Ok::<Bytes, std::convert::Infallible>(chunk)
     }));
     (
@@ -125,7 +143,10 @@ impl FileServer {
     /// random path, only to `allowed_peer` if given.
     ///
     /// # Errors
-    /// Fails if the address cannot be bound or no random token can be drawn.
+    /// Fails if the address cannot be bound.
+    ///
+    /// # Panics
+    /// If the operating system provides no random numbers.
     pub async fn start(
         bind: SocketAddr,
         package: Bytes,
@@ -133,7 +154,8 @@ impl FileServer {
         allowed_peer: Option<IpAddr>,
     ) -> std::io::Result<Self> {
         let mut random = [0_u8; TOKEN_BYTES];
-        getrandom::fill(&mut random).map_err(|error| std::io::Error::other(error.to_string()))?;
+        // Without an OS random source there is no safe token; nothing works then.
+        getrandom::fill(&mut random).expect("the operating system's random source is unavailable");
         let token = hex::encode(random);
         let rejected = Arc::new(AtomicU32::new(0));
         let package_file = ServedFile {
@@ -213,77 +235,5 @@ impl Drop for FileServer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn server(allowed_peer: Option<IpAddr>) -> FileServer {
-        let image = Bytes::from(vec![7_u8; 10_000]);
-        FileServer::start(
-            "127.0.0.1:0".parse().expect("addr"),
-            Bytes::from_static(b"zip"),
-            image,
-            allowed_peer,
-        )
-        .await
-        .expect("server")
-    }
-
-    #[tokio::test]
-    async fn serves_both_files_and_counts_bytes() {
-        let server = server(Some("127.0.0.1".parse().expect("ip"))).await;
-        let response = reqwest::get(server.url(IMAGE_PATH)).await.expect("get");
-        assert_eq!(response.headers()["cache-control"], "no-store");
-        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
-        let body = response.bytes().await.expect("body");
-        assert_eq!(body.len(), 10_000);
-        assert_eq!(server.image_stats().requests(), 1);
-        assert_eq!(server.image_stats().sent_bytes(), 10_000);
-        assert_eq!(server.image_stats().completed(), 1);
-
-        let zip =
-            reqwest::get(server.url(PACKAGE_PATH)).await.expect("get").bytes().await.expect("body");
-        assert_eq!(&zip[..], b"zip");
-        assert_eq!(server.package_stats().completed(), 1);
-        assert_eq!(server.address().ip().to_string(), "127.0.0.1");
-        assert_eq!(server.rejected_requests(), 0);
-    }
-
-    #[tokio::test]
-    async fn files_need_the_token() {
-        let server = server(None).await;
-        let address = server.address();
-        for path in [IMAGE_PATH, PACKAGE_PATH] {
-            let response = reqwest::get(format!("http://{address}{path}")).await.expect("get");
-            assert_eq!(response.status(), 404);
-        }
-        let wrong = format!("http://{address}/{}{IMAGE_PATH}", "0".repeat(32));
-        assert_eq!(reqwest::get(wrong).await.expect("get").status(), 404);
-        assert_eq!(server.image_stats().requests(), 0);
-        // Two servers never share a token.
-        assert_ne!(server.url(IMAGE_PATH), self::server(None).await.url(IMAGE_PATH));
-    }
-
-    #[tokio::test]
-    async fn other_hosts_are_refused() {
-        let server = server(Some("10.10.5.79".parse().expect("ip"))).await;
-        let response = reqwest::get(server.url(IMAGE_PATH)).await.expect("get");
-        assert_eq!(response.status(), 403);
-        assert_eq!(server.rejected_requests(), 1);
-        assert_eq!(server.image_stats().requests(), 0);
-    }
-
-    #[tokio::test]
-    async fn overlapping_downloads_are_counted_per_response() {
-        let server = server(None).await;
-        let (first, second) = tokio::join!(
-            reqwest::get(server.url(IMAGE_PATH)),
-            reqwest::get(server.url(IMAGE_PATH))
-        );
-        let (first, second) = (first.expect("first"), second.expect("second"));
-        assert_eq!(first.bytes().await.expect("body").len(), 10_000);
-        assert_eq!(second.bytes().await.expect("body").len(), 10_000);
-        assert_eq!(server.image_stats().completed(), 2);
-        assert_eq!(server.image_stats().requests(), 2);
-        assert_eq!(server.image_stats().sent_bytes(), 10_000);
-    }
-}
+#[path = "unit_tests/server.rs"]
+mod tests;

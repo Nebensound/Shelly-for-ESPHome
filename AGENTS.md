@@ -28,7 +28,12 @@ live here were removed on purpose; do not reintroduce them.
   - `device.rs` holds the HTTP client for the stock and migration firmware.
   - `server.rs` is the local file server.
   - `flash.rs` holds the procedure and its safety checks.
-  - `main.rs` is the console UI.
+  - `cli.rs` is the console UI (arguments, output, prompts); `main.rs` only
+    connects it to the process. Tests drive `cli::run` with their own
+    writers and settings.
+  - Unit tests live in `src/unit_tests/<module>.rs` (included with
+    `#[path]`), integration tests in `tests/`; the simulated devices are in
+    `tests/common/`. Neither counts as production code for coverage.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
   - `src/main.c` is the hardware glue: rboot, SPI flash, HTTP, RPC.
   - `src/mg2x_job.c`, `src/mg2x_writer.c`, `src/mg2x_install.c` and
@@ -79,5 +84,6 @@ live here were removed on purpose; do not reintroduce them.
 - `main.c` (hardware glue) cannot run on the host. Its behaviour is covered by
   the CLI's end-to-end tests against a simulated device and by tests on real
   hardware.
-- The CLI coverage gate (100%) is enforced in CI. The console UI in `main.rs`
-  is not yet covered by tests.
+- Error paths that cannot occur in practice are written without a branch
+  instead of being left untested (for example `unwrap_or_default` for building
+  an HTTP client without TLS backends), so the 100% region gate stays honest.

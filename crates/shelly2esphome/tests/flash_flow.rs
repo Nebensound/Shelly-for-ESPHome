@@ -1,348 +1,20 @@
 //! End-to-end tests of the flash procedure against a simulated Shelly device.
 #![allow(missing_docs, clippy::unwrap_used)]
 
-use std::{
-    io::{Cursor, Write},
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
+mod common;
 
-use axum::{
-    Json, Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
-    routing::{get, post},
-};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
+use std::{path::PathBuf, time::Duration};
+
+use common::*;
 use shelly2esphome::{
     backup::{self, BackupError},
     device::{DeviceClient, DeviceError, MigrationState},
     embedded::Packages,
-    flash::{self, FlashError, FlashOptions, Reporter, Timeouts},
-    image::{FirmwareImage, MIN_IMAGE_BYTES, synthetic},
+    flash::{self, FlashError, FlashOptions},
+    image::{FirmwareImage, synthetic},
     migration::{MigrationPackage, PackageError},
     model::Model,
 };
-use tokio::net::TcpListener;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Stock,
-    Migration,
-    Esphome,
-}
-
-#[derive(Debug)]
-struct Fake {
-    mode: Mode,
-    device_type: &'static str,
-    rssi: i32,
-    auth_required: bool,
-    shelly_requires_auth: bool,
-    has_actions: bool,
-    settings_status: u16,
-    ignore_ota: bool,
-    stays_stock_after_ota: bool,
-    state: MigrationState,
-    error: String,
-    max_size: u64,
-    received: u64,
-    size: u64,
-    fail_with: Option<&'static str>,
-    reject_flash: Option<&'static str>,
-    open_esphome_port: bool,
-    esphome_port: u16,
-    http_port: u16,
-    ota_requests: u32,
-    package: Vec<u8>,
-    image: Vec<u8>,
-}
-
-type Shared = Arc<Mutex<Fake>>;
-
-fn fake(mode: Mode) -> Fake {
-    Fake {
-        mode,
-        device_type: "SHDM-2",
-        rssi: -60,
-        auth_required: false,
-        shelly_requires_auth: false,
-        has_actions: true,
-        settings_status: 200,
-        ignore_ota: false,
-        stays_stock_after_ota: false,
-        state: MigrationState::Idle,
-        error: String::new(),
-        max_size: 1_000_000,
-        received: 0,
-        size: 0,
-        fail_with: None,
-        reject_flash: None,
-        open_esphome_port: true,
-        esphome_port: 0,
-        http_port: 0,
-        ota_requests: 0,
-        package: Vec::new(),
-        image: Vec::new(),
-    }
-}
-
-async fn shelly(State(shared): State<Shared>) -> Response {
-    let fake = shared.lock().unwrap();
-    if fake.mode != Mode::Stock {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    if fake.shelly_requires_auth {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    Json(serde_json::json!({
-        "type": fake.device_type, "mac": "E8DB84D41F49", "auth": fake.auth_required,
-        "fw": "20230913-114008/v1.14.0-gcb84623"
-    }))
-    .into_response()
-}
-
-async fn settings(State(shared): State<Shared>) -> Response {
-    let fake = shared.lock().unwrap();
-    if fake.mode != Mode::Stock {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    if fake.auth_required {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    if fake.settings_status != 200 {
-        return StatusCode::from_u16(fake.settings_status).unwrap().into_response();
-    }
-    let channels = if fake.device_type.starts_with("SHDM") { "lights" } else { "relays" };
-    Json(serde_json::json!({ "name": "test", channels: [{ "name": "ch0" }] })).into_response()
-}
-
-async fn channel_settings(
-    State(shared): State<Shared>,
-    Path((kind, index)): Path<(String, u32)>,
-) -> Response {
-    let fake = shared.lock().unwrap();
-    if fake.mode != Mode::Stock {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    Json(serde_json::json!({ "kind": kind, "index": index })).into_response()
-}
-
-async fn actions(State(shared): State<Shared>) -> Response {
-    let fake = shared.lock().unwrap();
-    if fake.mode != Mode::Stock || !fake.has_actions {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    Json(serde_json::json!({ "actions": {} })).into_response()
-}
-
-async fn status(State(shared): State<Shared>) -> Response {
-    let fake = shared.lock().unwrap();
-    if fake.auth_required {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    Json(serde_json::json!({ "wifi_sta": { "rssi": fake.rssi } })).into_response()
-}
-
-#[derive(Deserialize)]
-struct OtaQuery {
-    url: String,
-}
-
-async fn ota(State(shared): State<Shared>, Query(query): Query<OtaQuery>) -> Response {
-    {
-        let mut fake = shared.lock().unwrap();
-        fake.ota_requests += 1;
-        if fake.ignore_ota {
-            return Json(serde_json::json!({ "status": "updating" })).into_response();
-        }
-    }
-    tokio::spawn(async move {
-        let package = reqwest::get(&query.url).await.unwrap().bytes().await.unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await; // reboots
-        let mut fake = shared.lock().unwrap();
-        fake.package = package.to_vec();
-        if !fake.stays_stock_after_ota {
-            fake.mode = Mode::Migration;
-        }
-    });
-    Json(serde_json::json!({ "status": "updating" })).into_response()
-}
-
-async fn mg2x_status(State(shared): State<Shared>) -> Response {
-    let fake = shared.lock().unwrap();
-    if fake.mode != Mode::Migration {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let state = match fake.state {
-        MigrationState::Idle => "idle",
-        MigrationState::Downloading => "downloading",
-        MigrationState::Installing => "installing",
-        MigrationState::Failed => "failed",
-        MigrationState::RelocationFailed => "relocation_failed",
-    };
-    Json(serde_json::json!({
-        "protocol": 2, "state": state, "received": fake.received, "size": fake.size,
-        "max_size": fake.max_size, "error": fake.error
-    }))
-    .into_response()
-}
-
-#[derive(Deserialize)]
-struct FlashRequest {
-    url: String,
-    size: u64,
-    sha256: String,
-}
-
-async fn mg2x_flash(State(shared): State<Shared>, Json(request): Json<FlashRequest>) -> Response {
-    {
-        let mut fake = shared.lock().unwrap();
-        if fake.mode != Mode::Migration {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        if let Some(message) = fake.reject_flash {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"code": 400, "message": message})),
-            )
-                .into_response();
-        }
-        fake.state = MigrationState::Downloading;
-        fake.size = request.size;
-    }
-    tokio::spawn(async move {
-        let image = reqwest::get(&request.url).await.unwrap().bytes().await.unwrap();
-        let digest = hex::encode(Sha256::digest(&image));
-        let (fail_with, open_port, port) = {
-            let mut fake = shared.lock().unwrap();
-            fake.received = image.len() as u64;
-            fake.image = image.to_vec();
-            (fake.fail_with, fake.open_esphome_port, fake.esphome_port)
-        };
-        let failure =
-            fail_with.or(if digest == request.sha256 && image.len() as u64 == request.size {
-                None
-            } else {
-                Some("hash_mismatch")
-            });
-        if let Some(reason) = failure {
-            let mut fake = shared.lock().unwrap();
-            fake.state = MigrationState::Failed;
-            fake.error = reason.to_owned();
-            return;
-        }
-        shared.lock().unwrap().state = MigrationState::Installing;
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        shared.lock().unwrap().mode = Mode::Esphome;
-        if open_port {
-            let listener = TcpListener::bind(("127.0.0.1", port)).await.unwrap();
-            tokio::spawn(async move {
-                loop {
-                    let _ = listener.accept().await;
-                }
-            });
-        }
-    });
-    Json(serde_json::json!({ "started": true })).into_response()
-}
-
-async fn start_fake(mut fake: Fake) -> (String, Shared) {
-    // Reserve a port for the ESPHome API; it is opened only after installation.
-    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    fake.esphome_port = reserved.local_addr().unwrap().port();
-    drop(reserved);
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address: SocketAddr = listener.local_addr().unwrap();
-    fake.http_port = address.port();
-    let shared = Arc::new(Mutex::new(fake));
-    let app = Router::new()
-        .route("/shelly", get(shelly))
-        .route("/status", get(status))
-        .route("/settings", get(settings))
-        .route("/settings/actions", get(actions))
-        .route("/settings/{kind}/{index}", get(channel_settings))
-        .route("/ota", get(ota))
-        .route("/rpc/MG2X.Status", get(mg2x_status))
-        .route("/rpc/MG2X.Flash", post(mg2x_flash))
-        .with_state(Arc::clone(&shared));
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (address.to_string(), shared)
-}
-
-#[derive(Default)]
-struct Recorder {
-    messages: Vec<String>,
-    summaries: Vec<String>,
-    last_progress: Option<(u64, u64)>,
-    decline: bool,
-}
-
-impl Reporter for Recorder {
-    fn info(&mut self, message: &str) {
-        self.messages.push(message.to_owned());
-    }
-    fn progress(&mut self, sent_bytes: u64, total_bytes: u64) {
-        self.last_progress = Some((sent_bytes, total_bytes));
-    }
-    fn confirm(&mut self, summary: &str) -> bool {
-        self.summaries.push(summary.to_owned());
-        !self.decline
-    }
-}
-
-fn image() -> FirmwareImage {
-    FirmwareImage::parse(synthetic::image(MIN_IMAGE_BYTES + 12_345)).unwrap()
-}
-
-fn package(model: Model) -> MigrationPackage {
-    let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    writer.start_file("fw/manifest.json", zip::write::SimpleFileOptions::default()).unwrap();
-    write!(writer, r#"{{"name":"{}","platform":"esp8266"}}"#, model.app_name()).unwrap();
-    writer.start_file("fw/app.bin", zip::write::SimpleFileOptions::default()).unwrap();
-    writer.write_all(b"\0shelly2esphome-mg2x-protocol=2\0").unwrap();
-    MigrationPackage::parse(writer.finish().unwrap().into_inner()).unwrap()
-}
-
-/// A fresh, empty directory below the system's temporary directory.
-fn scratch_dir() -> PathBuf {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let directory = std::env::temp_dir().join(format!(
-        "s2e-test-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::SeqCst)
-    ));
-    let _ = std::fs::remove_dir_all(&directory);
-    directory
-}
-
-fn options(shared: &Shared) -> FlashOptions {
-    let fake = shared.lock().unwrap();
-    FlashOptions {
-        serve_ip: Some("127.0.0.1".parse().unwrap()),
-        esphome_port: fake.esphome_port,
-        migration_port: fake.http_port,
-        timeouts: Timeouts {
-            package_fetch: Duration::from_secs(5),
-            migration_boot: Duration::from_secs(5),
-            flash: Duration::from_secs(10),
-            esphome_boot: Duration::from_secs(5),
-            poll_interval: Duration::from_millis(20),
-        },
-        // Independent of how the test binary was built.
-        embedded_packages: Packages(&[]),
-        backup_dir: Some(scratch_dir()),
-        ..FlashOptions::default()
-    }
-}
 
 async fn run(
     host: &str,
@@ -350,7 +22,7 @@ async fn run(
     package: Option<&MigrationPackage>,
     recorder: &mut Recorder,
 ) -> Result<flash::FlashOutcome, FlashError> {
-    let client = DeviceClient::new(host, None).unwrap();
+    let client = DeviceClient::new(host, None);
     flash::run(host, &client, &image(), package, &options(shared), recorder).await
 }
 
@@ -421,7 +93,7 @@ async fn backs_up_a_relay_device_without_actions() {
     device.device_type = "SHSW-PM";
     device.has_actions = false;
     let (host, _shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let saved = backup::collect(&client).await.unwrap();
     assert_eq!(saved.info.device_type, "SHSW-PM");
     let names: Vec<&str> = saved.files.iter().map(|(name, _)| name.as_str()).collect();
@@ -431,7 +103,7 @@ async fn backs_up_a_relay_device_without_actions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn backup_needs_the_stock_firmware_and_the_login() {
     let (host, _shared) = start_fake(fake(Mode::Migration)).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let error = backup::collect(&client).await.unwrap_err();
     assert!(matches!(error, BackupError::NotStock));
     assert!(error.to_string().contains("nothing to back up"));
@@ -439,20 +111,20 @@ async fn backup_needs_the_stock_firmware_and_the_login() {
     let mut device = fake(Mode::Stock);
     device.auth_required = true;
     let (host, _shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let error = backup::collect(&client).await.unwrap_err();
     assert!(matches!(error, BackupError::Device(DeviceError::AuthRequired)));
 
     let mut device = fake(Mode::Stock);
     device.settings_status = 404;
     let (host, _shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     assert!(matches!(backup::collect(&client).await, Err(BackupError::NotStock)));
 
     let mut device = fake(Mode::Stock);
     device.settings_status = 500;
     let (host, _shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let error = backup::collect(&client).await.unwrap_err();
     assert!(error.to_string().contains("/settings answered with HTTP 500"));
 }
@@ -521,7 +193,7 @@ async fn weak_signal_can_be_overridden_deliberately() {
     let mut device = fake(Mode::Stock);
     device.rssi = -83;
     let (host, shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let options = FlashOptions { allow_weak_signal: true, ..options(&shared) };
     let package = package(Model::ShellyDimmer2);
     flash::run(&host, &client, &image(), Some(&package), &options, &mut Recorder::default())
@@ -548,7 +220,7 @@ async fn picks_the_embedded_package_of_the_detected_model() {
         vec![("mg2esphome-Shelly1PM.zip", &*wrong), ("mg2esphome-ShellyDimmer2.zip", &*right)]
             .leak();
     let options = FlashOptions { embedded_packages: Packages(packages), ..options(&shared) };
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     flash::run(&host, &client, &image(), None, &options, &mut Recorder::default()).await.unwrap();
     let fake = shared.lock().unwrap();
     assert_eq!(fake.package, right.to_vec());
@@ -591,7 +263,7 @@ async fn reports_when_the_package_is_never_fetched() {
     let mut device = fake(Mode::Stock);
     device.ignore_ota = true;
     let (host, shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let mut options = options(&shared);
     options.timeouts.package_fetch = Duration::from_millis(200);
     let package = package(Model::ShellyDimmer2);
@@ -609,7 +281,7 @@ async fn reports_when_the_migration_firmware_does_not_boot() {
     let mut device = fake(Mode::Stock);
     device.stays_stock_after_ota = true;
     let (host, shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let mut options = options(&shared);
     options.timeouts.migration_boot = Duration::from_millis(300);
     let package = package(Model::ShellyDimmer2);
@@ -655,7 +327,7 @@ async fn reports_when_esphome_does_not_answer() {
     let mut device = fake(Mode::Migration);
     device.open_esphome_port = false;
     let (host, shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let mut options = options(&shared);
     options.timeouts.esphome_boot = Duration::from_millis(300);
     let error = flash::run(&host, &client, &image(), None, &options, &mut Recorder::default())
@@ -667,20 +339,20 @@ async fn reports_when_esphome_does_not_answer() {
 #[tokio::test(flavor = "multi_thread")]
 async fn identifies_unknown_firmware_and_missing_login() {
     let (host, _shared) = start_fake(fake(Mode::Esphome)).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     assert!(matches!(client.identify().await, Err(DeviceError::UnknownFirmware)));
 
     let mut device = fake(Mode::Stock);
     device.auth_required = true;
     let (host, _shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     assert!(matches!(client.identify().await, Err(DeviceError::AuthRequired)));
 
     // Firmware variants that protect /shelly as well.
     let mut device = fake(Mode::Stock);
     device.shelly_requires_auth = true;
     let (host, _shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     assert!(matches!(client.identify().await, Err(DeviceError::AuthRequired)));
 }
 
@@ -689,7 +361,7 @@ async fn refuses_an_oversized_image_before_touching_stock_firmware() {
     let (host, shared) = start_fake(fake(Mode::Stock)).await;
     let big = FirmwareImage::parse(synthetic::image(Model::ShellyDimmer2.max_image_bytes() + 4096))
         .unwrap();
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let package = package(Model::ShellyDimmer2);
     let error = flash::run(
         &host,
@@ -722,7 +394,7 @@ async fn reports_a_failed_relocation_after_the_stock_update() {
     device.state = MigrationState::RelocationFailed;
     device.error = "relocation_copy".to_owned();
     let (host, shared) = start_fake(device).await;
-    let client = DeviceClient::new(&host, None).unwrap();
+    let client = DeviceClient::new(&host, None);
     let mut options = options(&shared);
     options.timeouts.migration_boot = Duration::from_millis(400);
     let package = package(Model::ShellyDimmer2);
@@ -731,4 +403,125 @@ async fn reports_a_failed_relocation_after_the_stock_update() {
             .await
             .unwrap_err();
     assert!(matches!(error, FlashError::RelocationFailed(_)));
+}
+
+async fn run_with(
+    host: &str,
+    package: Option<&MigrationPackage>,
+    options: &FlashOptions,
+) -> Result<flash::FlashOutcome, FlashError> {
+    let client = DeviceClient::new(host, None);
+    flash::run(host, &client, &image(), package, options, &mut Recorder::default()).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stops_when_the_host_cannot_be_found_or_reached() {
+    let (_, shared) = start_fake(fake(Mode::Stock)).await;
+    let options = options(&shared);
+    let error = run_with("does-not-exist.invalid", None, &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::Io(_)));
+    let error = run_with(&closed_port(), None, &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::Device(DeviceError::Http(_))));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn detects_the_own_address_when_no_serve_ip_is_given() {
+    let (host, shared) = start_fake(fake(Mode::Migration)).await;
+    let options = FlashOptions { serve_ip: None, ..options(&shared) };
+    run_with(&host, None, &options).await.unwrap();
+    assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "multi_thread")]
+async fn stops_when_there_is_no_route_to_the_device() {
+    // Linux refuses to connect a UDP socket to the broadcast address.
+    let (_, shared) = start_fake(fake(Mode::Migration)).await;
+    let options = FlashOptions { serve_ip: None, ..options(&shared) };
+    let error = run_with("255.255.255.255:80", None, &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::Io(_)), "{error}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_a_broken_embedded_package() {
+    let (host, shared) = start_fake(fake(Mode::Stock)).await;
+    let options = FlashOptions {
+        embedded_packages: Packages(&[("mg2esphome-ShellyDimmer2.zip", b"not a zip")]),
+        ..options(&shared)
+    };
+    let error = run_with(&host, None, &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::Package(PackageError::Zip(_))));
+    assert_eq!(shared.lock().unwrap().ota_requests, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stops_when_the_backup_cannot_be_written() {
+    let (host, shared) = start_fake(fake(Mode::Stock)).await;
+    let blocker = scratch_dir();
+    std::fs::write(&blocker, "a file, not a directory").unwrap();
+    let options = FlashOptions { backup_dir: Some(blocker.clone()), ..options(&shared) };
+    let error = run_with(&host, Some(&package(Model::ShellyDimmer2)), &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::Backup(BackupError::Write(..))));
+    assert_eq!(shared.lock().unwrap().ota_requests, 0);
+    std::fs::remove_file(blocker).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flashes_without_backup_when_asked() {
+    let (host, shared) = start_fake(fake(Mode::Stock)).await;
+    let options = FlashOptions { backup_dir: None, ..options(&shared) };
+    run_with(&host, Some(&package(Model::ShellyDimmer2)), &options).await.unwrap();
+    assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stops_when_the_file_server_cannot_start() {
+    let (host, shared) = start_fake(fake(Mode::Migration)).await;
+    // TEST-NET-1: no local interface has this address.
+    let options = FlashOptions { serve_ip: Some("192.0.2.1".parse().unwrap()), ..options(&shared) };
+    let error = run_with(&host, None, &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::Io(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stops_when_the_stock_firmware_refuses_the_update() {
+    let mut device = fake(Mode::Stock);
+    device.ota_status = 500;
+    let (host, shared) = start_fake(device).await;
+    let error = run(&host, &shared, Some(&package(Model::ShellyDimmer2)), &mut Recorder::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FlashError::Device(DeviceError::Status { endpoint: "/ota", .. })));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn accepts_a_device_that_restarts_without_reporting_installing() {
+    let mut device = fake(Mode::Migration);
+    device.skip_installing = true;
+    let (host, shared) = start_fake(device).await;
+    run(&host, &shared, None, &mut Recorder::default()).await.unwrap();
+    assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gives_up_when_the_device_never_finishes() {
+    let mut device = fake(Mode::Migration);
+    device.hang_after_download = true;
+    let (host, shared) = start_fake(device).await;
+    let mut options = options(&shared);
+    options.timeouts.flash = Duration::from_secs(1);
+    let error = run_with(&host, None, &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::FlashTimeout));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn gives_up_when_the_migration_firmware_never_gets_ready() {
+    let mut device = fake(Mode::Stock);
+    // After the stock OTA the migration firmware keeps reporting a running job.
+    device.state = MigrationState::Downloading;
+    let (host, shared) = start_fake(device).await;
+    let mut options = options(&shared);
+    options.timeouts.migration_boot = Duration::from_secs(1);
+    let error = run_with(&host, Some(&package(Model::ShellyDimmer2)), &options).await.unwrap_err();
+    assert!(matches!(error, FlashError::MigrationNotReachable));
 }
