@@ -4,13 +4,17 @@
 use std::{
     io::{Cursor, Write},
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -18,6 +22,7 @@ use axum::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use shelly2esphome::{
+    backup::{self, BackupError},
     device::{DeviceClient, DeviceError, MigrationState},
     embedded::Packages,
     flash::{self, FlashError, FlashOptions, Reporter, Timeouts},
@@ -41,6 +46,8 @@ struct Fake {
     rssi: i32,
     auth_required: bool,
     shelly_requires_auth: bool,
+    has_actions: bool,
+    settings_status: u16,
     ignore_ota: bool,
     stays_stock_after_ota: bool,
     state: MigrationState,
@@ -67,6 +74,8 @@ fn fake(mode: Mode) -> Fake {
         rssi: -60,
         auth_required: false,
         shelly_requires_auth: false,
+        has_actions: true,
+        settings_status: 200,
         ignore_ota: false,
         stays_stock_after_ota: false,
         state: MigrationState::Idle,
@@ -98,6 +107,40 @@ async fn shelly(State(shared): State<Shared>) -> Response {
         "fw": "20230913-114008/v1.14.0-gcb84623"
     }))
     .into_response()
+}
+
+async fn settings(State(shared): State<Shared>) -> Response {
+    let fake = shared.lock().unwrap();
+    if fake.mode != Mode::Stock {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if fake.auth_required {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if fake.settings_status != 200 {
+        return StatusCode::from_u16(fake.settings_status).unwrap().into_response();
+    }
+    let channels = if fake.device_type.starts_with("SHDM") { "lights" } else { "relays" };
+    Json(serde_json::json!({ "name": "test", channels: [{ "name": "ch0" }] })).into_response()
+}
+
+async fn channel_settings(
+    State(shared): State<Shared>,
+    Path((kind, index)): Path<(String, u32)>,
+) -> Response {
+    let fake = shared.lock().unwrap();
+    if fake.mode != Mode::Stock {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Json(serde_json::json!({ "kind": kind, "index": index })).into_response()
+}
+
+async fn actions(State(shared): State<Shared>) -> Response {
+    let fake = shared.lock().unwrap();
+    if fake.mode != Mode::Stock || !fake.has_actions {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    Json(serde_json::json!({ "actions": {} })).into_response()
 }
 
 async fn status(State(shared): State<Shared>) -> Response {
@@ -224,6 +267,9 @@ async fn start_fake(mut fake: Fake) -> (String, Shared) {
     let app = Router::new()
         .route("/shelly", get(shelly))
         .route("/status", get(status))
+        .route("/settings", get(settings))
+        .route("/settings/actions", get(actions))
+        .route("/settings/{kind}/{index}", get(channel_settings))
         .route("/ota", get(ota))
         .route("/rpc/MG2X.Status", get(mg2x_status))
         .route("/rpc/MG2X.Flash", post(mg2x_flash))
@@ -266,6 +312,18 @@ fn package(model: Model) -> MigrationPackage {
     MigrationPackage::parse(writer.finish().unwrap().into_inner()).unwrap()
 }
 
+/// A fresh, empty directory below the system's temporary directory.
+fn scratch_dir() -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "s2e-test-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::SeqCst)
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    directory
+}
+
 fn options(shared: &Shared) -> FlashOptions {
     let fake = shared.lock().unwrap();
     FlashOptions {
@@ -281,6 +339,7 @@ fn options(shared: &Shared) -> FlashOptions {
         },
         // Independent of how the test binary was built.
         embedded_packages: Packages(&[]),
+        backup_dir: Some(scratch_dir()),
         ..FlashOptions::default()
     }
 }
@@ -311,11 +370,91 @@ async fn flashes_from_stock_firmware_end_to_end() {
     assert!(recorder.summaries[0].contains(image().sha256_hex()));
     let total = image().len() as u64;
     assert_eq!(recorder.last_progress, Some((total, total)));
-    assert!(recorder.messages.iter().any(|m| m.contains("Migrationsfirmware läuft")));
+    assert!(recorder.messages.iter().any(|m| m.contains("Migration firmware is running")));
     // The power warning is shown before the job is handed to the device.
-    let warning = recorder.messages.iter().position(|m| m.contains("Strom nicht trennen"));
-    let running = recorder.messages.iter().position(|m| m.contains("Migrationsfirmware läuft"));
+    let warning = recorder.messages.iter().position(|m| m.contains("Do not cut the power"));
+    let running =
+        recorder.messages.iter().position(|m| m.contains("Migration firmware is running"));
     assert!(warning.is_some() && warning > running);
+    // The stock settings were saved before the first change.
+    let saved = recorder
+        .messages
+        .iter()
+        .position(|m| m.starts_with("Stock settings saved to "))
+        .expect("backup message");
+    let handed = recorder.messages.iter().position(|m| m.contains("Handing the migration"));
+    assert!(Some(saved) < handed);
+    let directory = PathBuf::from(&recorder.messages[saved]["Stock settings saved to ".len()..]);
+    let mut files: Vec<String> = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    files.sort();
+    assert_eq!(
+        files,
+        [
+            "settings-actions.json",
+            "settings-light-0.json",
+            "settings.json",
+            "shelly.json",
+            "status.json"
+        ]
+    );
+    std::fs::remove_dir_all(directory.parent().unwrap()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stops_before_any_change_when_the_backup_fails() {
+    let mut device = fake(Mode::Stock);
+    device.settings_status = 500;
+    let (host, shared) = start_fake(device).await;
+    let package = package(Model::ShellyDimmer2);
+    let error = run(&host, &shared, Some(&package), &mut Recorder::default()).await.unwrap_err();
+    assert!(matches!(error, FlashError::Backup(_)));
+    assert!(error.to_string().contains("Nothing was changed"));
+    assert_eq!(shared.lock().unwrap().ota_requests, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backs_up_a_relay_device_without_actions() {
+    let mut device = fake(Mode::Stock);
+    device.device_type = "SHSW-PM";
+    device.has_actions = false;
+    let (host, _shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None).unwrap();
+    let saved = backup::collect(&client).await.unwrap();
+    assert_eq!(saved.info.device_type, "SHSW-PM");
+    let names: Vec<&str> = saved.files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["shelly.json", "status.json", "settings-relay-0.json", "settings.json"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn backup_needs_the_stock_firmware_and_the_login() {
+    let (host, _shared) = start_fake(fake(Mode::Migration)).await;
+    let client = DeviceClient::new(&host, None).unwrap();
+    let error = backup::collect(&client).await.unwrap_err();
+    assert!(matches!(error, BackupError::NotStock));
+    assert!(error.to_string().contains("nothing to back up"));
+
+    let mut device = fake(Mode::Stock);
+    device.auth_required = true;
+    let (host, _shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None).unwrap();
+    let error = backup::collect(&client).await.unwrap_err();
+    assert!(matches!(error, BackupError::Device(DeviceError::AuthRequired)));
+
+    let mut device = fake(Mode::Stock);
+    device.settings_status = 404;
+    let (host, _shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None).unwrap();
+    assert!(matches!(backup::collect(&client).await, Err(BackupError::NotStock)));
+
+    let mut device = fake(Mode::Stock);
+    device.settings_status = 500;
+    let (host, _shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None).unwrap();
+    let error = backup::collect(&client).await.unwrap_err();
+    assert!(error.to_string().contains("/settings answered with HTTP 500"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -327,7 +466,7 @@ async fn resumes_on_a_waiting_migration_firmware_without_package() {
     let mut recorder = Recorder::default();
     run(&host, &shared, None, &mut recorder).await.unwrap();
     assert_eq!(shared.lock().unwrap().ota_requests, 0);
-    assert!(recorder.summaries[0].contains("bereits mit der Migrationsfirmware"));
+    assert!(recorder.summaries[0].contains("already runs the migration firmware"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -337,7 +476,7 @@ async fn reports_a_verification_failure_of_the_device() {
     let (host, shared) = start_fake(device).await;
     let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(matches!(error, FlashError::DeviceFailed(ref reason) if reason == "hash_mismatch"));
-    assert!(error.to_string().contains("erneut ausführen"));
+    assert!(error.to_string().contains("run the command again"));
     assert_eq!(shared.lock().unwrap().mode, Mode::Migration);
 }
 
@@ -349,8 +488,8 @@ async fn warns_against_power_loss_when_restoring_the_boot_sectors_failed() {
     let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(matches!(error, FlashError::InstallFatal));
     let message = error.to_string();
-    assert!(message.contains("NICHT vom Strom trennen"));
-    assert!(message.contains("serielle Schnittstelle"));
+    assert!(message.contains("Do NOT cut the power"));
+    assert!(message.contains("serial interface"));
     assert_eq!(shared.lock().unwrap().mode, Mode::Migration);
 }
 
@@ -362,7 +501,7 @@ async fn warns_on_resume_after_a_fatal_install() {
     let (host, shared) = start_fake(device).await;
     let mut recorder = Recorder::default();
     run(&host, &shared, None, &mut recorder).await.unwrap();
-    assert!(recorder.summaries[0].contains("Strom nicht trennen"));
+    assert!(recorder.summaries[0].contains("Do not cut the power"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -461,7 +600,7 @@ async fn reports_when_the_package_is_never_fetched() {
             .await
             .unwrap_err();
     assert!(matches!(error, FlashError::PackageNotFetched(_)));
-    assert!(error.to_string().contains("Nichts verändert"));
+    assert!(error.to_string().contains("Nothing was changed"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -574,7 +713,7 @@ async fn reports_a_failed_relocation_on_resume() {
     let (host, shared) = start_fake(device).await;
     let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
     assert!(matches!(error, FlashError::RelocationFailed(ref e) if e == "relocation_copy"));
-    assert!(error.to_string().contains("Slot 1"));
+    assert!(error.to_string().contains("slot 1"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

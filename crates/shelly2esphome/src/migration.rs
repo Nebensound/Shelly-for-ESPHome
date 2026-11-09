@@ -4,46 +4,46 @@ use std::io::{Cursor, Read};
 
 use serde::Deserialize;
 
-use crate::{device::MIGRATION_PROTOCOL, model::Model};
-
-/// Marker the migration firmware embeds in its application binary.
-const MARKER_PREFIX: &[u8] = b"shelly2esphome-mg2x-protocol=";
+use crate::{
+    model::Model,
+    protocol::{self, MIGRATION_PROTOCOL},
+};
 
 /// Reasons why a file is not a usable migration package.
 #[derive(Debug, thiserror::Error)]
 pub enum PackageError {
     /// The file is not a readable ZIP archive.
-    #[error("das Migrationspaket ist kein gültiges ZIP-Archiv: {0}")]
+    #[error("the migration package is not a valid ZIP archive: {0}")]
     Zip(#[from] zip::result::ZipError),
     /// The archive has no `manifest.json` in its root.
-    #[error("im Migrationspaket fehlt manifest.json")]
+    #[error("the migration package has no manifest.json")]
     MissingManifest,
     /// `manifest.json` could not be read or parsed.
-    #[error("manifest.json im Migrationspaket ist ungültig: {0}")]
+    #[error("manifest.json in the migration package is invalid: {0}")]
     Manifest(String),
     /// A binary inside the archive could not be read (e.g. corrupted data).
-    #[error("eine Datei im Migrationspaket ist beschädigt: {0}")]
+    #[error("a file in the migration package is corrupted: {0}")]
     ReadEntry(String),
     /// The package was built for another platform.
-    #[error("das Migrationspaket ist für die Plattform {0:?} gebaut, nicht für esp8266")]
+    #[error("the migration package is built for platform {0:?}, not esp8266")]
     WrongPlatform(String),
     /// The archive is a Shelly ZIP, but not this project's migration firmware
     /// (e.g. a stock firmware, mg2tasmota or an older auto-downloading build).
     #[error(
-        "das ZIP ist kein shelly2esphome-Migrationspaket (Original-Firmware, mg2tasmota oder \
-         ältere Version?); bitte das aktuelle mg2esphome-<Modell>.zip aus der CI verwenden"
+        "the ZIP is not a shelly2esphome migration package (stock firmware, mg2tasmota or an \
+         older version?); use the current mg2esphome-<Model>.zip"
     )]
     NotAMigrationPackage,
     /// The migration firmware speaks another protocol version than this tool.
     #[error(
-        "das Migrationspaket spricht Protokoll {0}, dieses Werkzeug Protokoll {MIGRATION_PROTOCOL}; \
-         bitte Paket und Werkzeug aus demselben Stand verwenden"
+        "the migration package speaks protocol {0}, this tool protocol {MIGRATION_PROTOCOL}; use \
+         package and tool from the same version"
     )]
     ProtocolMismatch(u32),
     /// The package was built for another model and would be refused by the device.
     #[error(
-        "das Migrationspaket ist für {found:?} gebaut, das Gerät erwartet {expected:?} \
-         (falsches Modell gewählt?)"
+        "the migration package is built for {found:?}, the device expects {expected:?} (wrong \
+         model?)"
     )]
     WrongModel {
         /// Application name the device expects.
@@ -73,15 +73,8 @@ fn find_protocol_marker(
         entry
             .read_to_end(&mut content)
             .map_err(|error| PackageError::ReadEntry(error.to_string()))?;
-        if let Some(position) =
-            content.windows(MARKER_PREFIX.len()).position(|window| window == MARKER_PREFIX)
-        {
-            let digits: String = content[position + MARKER_PREFIX.len()..]
-                .iter()
-                .take_while(|byte| byte.is_ascii_digit())
-                .map(|&byte| char::from(byte))
-                .collect();
-            return Ok(Some(digits.parse().unwrap_or(0)));
+        if let Some(protocol) = protocol::find_marker(&content) {
+            return Ok(Some(protocol));
         }
     }
     Ok(None)
@@ -193,7 +186,7 @@ pub(crate) mod tests {
         let stock = package_zip(&[("manifest.json", manifest), ("dimmer-l51.bin", "stock")]);
         let error = MigrationPackage::parse(stock).expect_err("stock");
         assert!(matches!(error, PackageError::NotAMigrationPackage));
-        assert!(error.to_string().contains("kein shelly2esphome-Migrationspaket"));
+        assert!(error.to_string().contains("not a shelly2esphome migration package"));
 
         let old = package_zip(&[
             ("manifest.json", manifest),
@@ -201,7 +194,7 @@ pub(crate) mod tests {
         ]);
         let error = MigrationPackage::parse(old).expect_err("old");
         assert!(matches!(error, PackageError::ProtocolMismatch(1)));
-        assert!(error.to_string().contains("Protokoll 1"));
+        assert!(error.to_string().contains("protocol 1"));
 
         let garbled = package_zip(&[
             ("manifest.json", manifest),
@@ -225,7 +218,7 @@ pub(crate) mod tests {
         let package = MigrationPackage::parse(package_for(Model::Shelly1Pm)).expect("package");
         let error = package.ensure_model(Model::ShellyDimmer2).expect_err("wrong model");
         assert!(matches!(error, PackageError::WrongModel { expected: "dimmer-l51", .. }));
-        assert!(error.to_string().contains("falsches Modell"));
+        assert!(error.to_string().contains("wrong"));
     }
 
     #[test]
@@ -257,6 +250,6 @@ pub(crate) mod tests {
         zip[at] ^= 0x01;
         let error = MigrationPackage::parse(zip).expect_err("corrupted");
         assert!(matches!(error, PackageError::ReadEntry(_)));
-        assert!(error.to_string().contains("beschädigt"));
+        assert!(error.to_string().contains("corrupted"));
     }
 }

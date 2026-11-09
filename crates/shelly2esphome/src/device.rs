@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// Protocol version of the `MG2X.*` RPC methods this tool speaks.
-pub const MIGRATION_PROTOCOL: u32 = 2;
+pub use crate::protocol::MIGRATION_PROTOCOL;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Login for devices with enabled web authentication, given as `user:password`.
@@ -29,7 +28,7 @@ impl std::str::FromStr for Credentials {
             Some((user, password)) if !user.is_empty() => {
                 Ok(Self { user: user.to_owned(), password: password.to_owned() })
             }
-            _ => Err("erwartet benutzer:passwort".to_owned()),
+            _ => Err("expected user:password".to_owned()),
         }
     }
 }
@@ -38,13 +37,13 @@ impl std::str::FromStr for Credentials {
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceError {
     /// The device could not be reached or answered with an unreadable body.
-    #[error("Gerät nicht erreichbar oder Antwort unlesbar: {0}")]
+    #[error("device unreachable or unreadable answer: {0}")]
     Http(#[from] reqwest::Error),
     /// The device requires a login that was not given or is wrong.
-    #[error("das Gerät verlangt eine Anmeldung (--auth benutzer:passwort)")]
+    #[error("the device requires a login (--auth user:password)")]
     AuthRequired,
     /// An endpoint answered with an unexpected HTTP status.
-    #[error("{endpoint} antwortete mit HTTP {status}")]
+    #[error("{endpoint} answered with HTTP {status}")]
     Status {
         /// Path of the endpoint.
         endpoint: &'static str,
@@ -52,15 +51,13 @@ pub enum DeviceError {
         status: u16,
     },
     /// The migration firmware refused the request.
-    #[error("die Migrationsfirmware lehnt ab: {0}")]
+    #[error("the migration firmware refused: {0}")]
     Rejected(String),
     /// Neither the stock nor the migration firmware answered.
-    #[error("unbekannte Firmware: weder Shelly-Originalfirmware noch Migrationsfirmware")]
+    #[error("unknown firmware: neither Shelly stock firmware nor migration firmware")]
     UnknownFirmware,
     /// The migration firmware speaks another protocol version.
-    #[error(
-        "die Migrationsfirmware spricht Protokoll {0}, dieses Werkzeug Protokoll {MIGRATION_PROTOCOL}"
-    )]
+    #[error("the migration firmware speaks protocol {0}, this tool protocol {MIGRATION_PROTOCOL}")]
     UnsupportedProtocol(u32),
 }
 
@@ -175,6 +172,24 @@ impl DeviceClient {
         }
     }
 
+    /// Reads a JSON endpoint of the stock firmware; `None` if it does not exist (404).
+    ///
+    /// # Errors
+    /// Fails if the device is unreachable, needs a login, or answers with another status.
+    pub async fn get_json(
+        &self,
+        endpoint: &'static str,
+        path: &str,
+    ) -> Result<Option<serde_json::Value>, DeviceError> {
+        let response = self.get(path).send().await?;
+        match response.status().as_u16() {
+            200 => Ok(Some(response.json().await?)),
+            404 => Ok(None),
+            401 => Err(DeviceError::AuthRequired),
+            status => Err(DeviceError::Status { endpoint, status }),
+        }
+    }
+
     /// Determines the running firmware.
     ///
     /// # Errors
@@ -211,7 +226,7 @@ impl DeviceClient {
     /// Fails if the device refuses the request.
     pub async fn start_stock_ota(&self, package_url: &str) -> Result<(), DeviceError> {
         let mut url = reqwest::Url::parse(&format!("{}/ota", self.base_url))
-            .map_err(|error| DeviceError::Rejected(format!("ungültige Geräteadresse: {error}")))?;
+            .map_err(|error| DeviceError::Rejected(format!("invalid device address: {error}")))?;
         url.query_pairs_mut().append_pair("url", package_url);
         let response = self.get_url(url).send().await?;
         match response.status().as_u16() {
@@ -280,12 +295,12 @@ mod tests {
 
     #[test]
     fn credentials_parse_and_hide_the_password() {
-        let credentials: Credentials = "admin:geheim:mit:doppelpunkt".parse().expect("valid");
+        let credentials: Credentials = "admin:secret:with:colon".parse().expect("valid");
         assert_eq!(credentials.user, "admin");
-        assert_eq!(credentials.password, "geheim:mit:doppelpunkt");
-        assert!(!format!("{credentials:?}").contains("geheim"));
-        assert!("ohne-doppelpunkt".parse::<Credentials>().is_err());
-        assert!(":nur-passwort".parse::<Credentials>().is_err());
+        assert_eq!(credentials.password, "secret:with:colon");
+        assert!(!format!("{credentials:?}").contains("secret"));
+        assert!("no-colon".parse::<Credentials>().is_err());
+        assert!(":password-only".parse::<Credentials>().is_err());
     }
 
     #[test]
@@ -299,10 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn error_messages_are_german() {
-        assert!(DeviceError::AuthRequired.to_string().contains("Anmeldung"));
-        assert!(DeviceError::UnknownFirmware.to_string().contains("unbekannte Firmware"));
-        assert!(DeviceError::UnsupportedProtocol(2).to_string().contains("Protokoll 2"));
+    fn error_messages_are_readable() {
+        assert!(DeviceError::AuthRequired.to_string().contains("login"));
+        assert!(DeviceError::UnknownFirmware.to_string().contains("unknown firmware"));
+        assert!(DeviceError::UnsupportedProtocol(2).to_string().contains("protocol 2"));
         assert!(DeviceError::Rejected("busy".into()).to_string().contains("busy"));
         assert!(
             DeviceError::Status { endpoint: "/ota", status: 500 }.to_string().contains("HTTP 500")

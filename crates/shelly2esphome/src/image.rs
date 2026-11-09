@@ -49,8 +49,8 @@ pub enum Part {
 impl std::fmt::Display for Part {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Bootloader => "Bootloader",
-            Self::Application => "Anwendung",
+            Self::Bootloader => "bootloader",
+            Self::Application => "application",
         })
     }
 }
@@ -59,22 +59,22 @@ impl std::fmt::Display for Part {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ImageError {
     /// The file is gzip compressed.
-    #[error("die Datei ist gzip-komprimiert; benötigt wird die unkomprimierte firmware.bin")]
+    #[error("the file is gzip-compressed; the uncompressed firmware.bin is required")]
     Compressed,
     /// The file is smaller than any plausible ESPHome image.
-    #[error("die Datei ist mit {actual} Bytes zu klein (mindestens {MIN_IMAGE_BYTES} Bytes)")]
+    #[error("the file is too small with {actual} bytes (at least {MIN_IMAGE_BYTES} bytes)")]
     TooSmall {
         /// Size of the file in bytes.
         actual: usize,
     },
     /// The file is larger than any supported staging slot.
-    #[error("die Datei ist mit {actual} Bytes zu groß (höchstens {MAX_IMAGE_BYTES} Bytes)")]
+    #[error("the file is too large with {actual} bytes (at most {MAX_IMAGE_BYTES} bytes)")]
     TooLarge {
         /// Size of the file in bytes.
         actual: usize,
     },
     /// An image header does not start with the ESP magic byte.
-    #[error("{part}: keine ESP-Firmware (Byte 0x{found:02X} statt 0xE9)")]
+    #[error("{part}: not an ESP firmware (byte 0x{found:02X} instead of 0xE9)")]
     BadMagic {
         /// Affected image.
         part: Part,
@@ -82,7 +82,7 @@ pub enum ImageError {
         found: u8,
     },
     /// An image header announces an implausible number of segments.
-    #[error("{part}: ungültiger Image-Header ({count} Segmente)")]
+    #[error("{part}: invalid image header ({count} segments)")]
     BadSegmentCount {
         /// Affected image.
         part: Part,
@@ -90,25 +90,25 @@ pub enum ImageError {
         count: u8,
     },
     /// The bootloader entry point is outside the ESP8266 instruction RAM.
-    #[error("kein ESP8266-Image (Einsprungadresse 0x{0:08X}); ist es für einen ESP32 gebaut?")]
+    #[error("not an ESP8266 image (entry point 0x{0:08X}); was it built for an ESP32?")]
     NotEsp8266(u32),
     /// A segment or the checksum lies beyond the end of the file or image.
-    #[error("{part}: Segment ragt über das Ende hinaus – Datei abgeschnitten?")]
+    #[error("{part}: a segment extends past the end – truncated file?")]
     Truncated {
         /// Affected image.
         part: Part,
     },
     /// The XOR checksum of an image does not match.
-    #[error("{part}: Prüfsumme stimmt nicht – Datei beschädigt?")]
+    #[error("{part}: checksum mismatch – corrupted file?")]
     BadChecksum {
         /// Affected image.
         part: Part,
     },
     /// The file continues after the application image.
-    #[error("nach der Anwendung folgen {0} weitere Bytes – keine einzelne ESPHome-firmware.bin?")]
+    #[error("{0} more bytes follow the application – not a single ESPHome firmware.bin?")]
     TrailingData(usize),
     /// The embedded length or CRC-32 does not match the file.
-    #[error("eingebettete Länge/CRC passt nicht zur Datei – Datei abgeschnitten oder verändert?")]
+    #[error("embedded length/CRC does not match the file – truncated or modified?")]
     BadCrc,
 }
 
@@ -417,28 +417,28 @@ mod tests {
     }
 
     #[test]
-    fn error_messages_are_german_and_specific() {
+    fn error_messages_are_specific() {
         assert!(ImageError::Compressed.to_string().contains("gzip"));
-        assert!(ImageError::TooSmall { actual: 1 }.to_string().contains("zu klein"));
-        assert!(ImageError::TooLarge { actual: 1 }.to_string().contains("zu groß"));
+        assert!(ImageError::TooSmall { actual: 1 }.to_string().contains("too small"));
+        assert!(ImageError::TooLarge { actual: 1 }.to_string().contains("too large"));
         assert!(
             ImageError::BadMagic { part: Part::Bootloader, found: 0x12 }
                 .to_string()
-                .contains("Bootloader: keine ESP-Firmware (Byte 0x12")
+                .contains("bootloader: not an ESP firmware (byte 0x12")
         );
         assert!(
             ImageError::BadSegmentCount { part: Part::Application, count: 0 }
                 .to_string()
-                .contains("Anwendung")
+                .contains("application")
         );
         assert!(ImageError::NotEsp8266(0x4008_0400).to_string().contains("ESP32"));
         assert!(
-            ImageError::Truncated { part: Part::Application }.to_string().contains("abgeschnitten")
+            ImageError::Truncated { part: Part::Application }.to_string().contains("truncated")
         );
         assert!(
-            ImageError::BadChecksum { part: Part::Bootloader }.to_string().contains("beschädigt")
+            ImageError::BadChecksum { part: Part::Bootloader }.to_string().contains("corrupted")
         );
-        assert!(ImageError::TrailingData(3).to_string().contains("3 weitere Bytes"));
+        assert!(ImageError::TrailingData(3).to_string().contains("3 more bytes"));
         assert!(ImageError::BadCrc.to_string().contains("CRC"));
     }
 }

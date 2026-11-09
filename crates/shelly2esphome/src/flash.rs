@@ -6,12 +6,14 @@
 
 use std::{
     net::{IpAddr, SocketAddr, UdpSocket},
+    path::PathBuf,
     time::Duration,
 };
 
 use tokio::time::{Instant, sleep, timeout};
 
 use crate::{
+    backup::{self, BackupError},
     device::{DeviceClient, DeviceError, Firmware, MigrationState, MigrationStatus},
     embedded::Packages,
     image::FirmwareImage,
@@ -70,6 +72,9 @@ pub struct FlashOptions {
     pub timeouts: Timeouts,
     /// Migration packages used when no package is given explicitly.
     pub embedded_packages: Packages,
+    /// Directory for the backup of the stock settings made before the first
+    /// change; `None` skips the backup.
+    pub backup_dir: Option<PathBuf>,
 }
 
 impl Default for FlashOptions {
@@ -83,6 +88,7 @@ impl Default for FlashOptions {
             migration_port: 80,
             timeouts: Timeouts::default(),
             embedded_packages: Packages::BUILT_IN,
+            backup_dir: Some(PathBuf::from(".")),
         }
     }
 }
@@ -113,16 +119,19 @@ pub enum FlashError {
     /// The migration package is unusable.
     #[error(transparent)]
     Package(#[from] PackageError),
+    /// The stock settings could not be backed up; nothing was changed.
+    #[error("{0}. Nothing was changed.")]
+    Backup(#[from] BackupError),
     /// The local file server could not be started or the host not resolved.
-    #[error("Netzwerkfehler auf diesem Rechner: {0}")]
+    #[error("network error on this computer: {0}")]
     Io(#[from] std::io::Error),
     /// The device type is not supported by the migration firmware.
-    #[error("Gerätetyp {0} wird nicht unterstützt")]
+    #[error("device type {0} is not supported")]
     UnsupportedModel(String),
     /// The Wi-Fi signal is too weak for a safe transfer.
     #[error(
-        "WLAN-Signal zu schwach: {rssi_dbm} dBm (Minimum {min_rssi_dbm} dBm). Erst den Empfang \
-         verbessern oder bewusst --allow-weak-signal setzen. Nichts verändert."
+        "Wi-Fi signal too weak: {rssi_dbm} dBm (minimum {min_rssi_dbm} dBm). Improve the \
+         reception first or deliberately pass --allow-weak-signal. Nothing was changed."
     )]
     WeakSignal {
         /// Measured signal.
@@ -132,38 +141,37 @@ pub enum FlashError {
     },
     /// The device runs stock firmware but no migration package was given.
     #[error(
-        "das Gerät läuft mit der Originalfirmware und dieses Programm enthält kein \
-         Migrationspaket dafür: bitte --migration {0} angeben oder das macOS-Binary aus der CI \
-         verwenden"
+        "the device runs the stock firmware and this build contains no migration package for \
+         it: pass --migration {0} or use a build that contains the packages (see README)"
     )]
     PackageRequired(String),
     /// The user declined the confirmation.
-    #[error("abgebrochen, nichts verändert")]
+    #[error("aborted, nothing was changed")]
     Aborted,
     /// The stock firmware did not download the package.
     #[error(
-        "das Gerät hat das Migrationspaket nicht abgeholt. Erreicht es diesen Rechner \
-         ({0})? Firewall/VLAN prüfen oder --serve-ip setzen. Nichts verändert."
+        "the device did not fetch the migration package. Can it reach this computer ({0})? \
+         Check firewall/VLAN or set --serve-ip. Nothing was changed."
     )]
     PackageNotFetched(String),
     /// The migration firmware did not show up after the stock OTA.
     #[error(
-        "die Migrationsfirmware meldet sich nicht. Gerät neu starten und den Befehl erneut \
-         ausführen; die IP-Adresse kann sich geändert haben."
+        "the migration firmware does not answer. Restart the device and run the command again; \
+         its IP address may have changed."
     )]
     MigrationNotReachable,
     /// The migration firmware could not move itself into slot 1 yet.
     #[error(
-        "die Migrationsfirmware konnte sich noch nicht in Slot 1 verschieben ({0}); sie versucht \
-         es nach einem Neustart automatisch erneut. In einer Minute nochmals ausführen."
+        "the migration firmware could not move itself into slot 1 yet ({0}); it retries \
+         automatically after a restart. Run the command again in a minute."
     )]
     RelocationFailed(String),
     /// The migration firmware is already working on a job.
-    #[error("die Migrationsfirmware ist beschäftigt ({0:?}); kurz warten und erneut ausführen")]
+    #[error("the migration firmware is busy ({0:?}); wait a moment and run the command again")]
     Busy(MigrationState),
     /// The image does not fit into the staging slot.
     #[error(
-        "die Firmware ist mit {size} Bytes zu groß für dieses Gerät (höchstens {max_size} Bytes)"
+        "the firmware is too large for this device with {size} bytes (at most {max_size} bytes)"
     )]
     ImageTooLarge {
         /// Image size.
@@ -173,26 +181,25 @@ pub enum FlashError {
     },
     /// The migration firmware reported a failed job.
     #[error(
-        "das Gerät meldet den Fehler „{0}“. Es bleibt in der Migrationsfirmware und nimmt einen \
-         neuen Versuch an: Befehl erneut ausführen."
+        "the device reports the error \"{0}\". It stays in the migration firmware and accepts \
+         another attempt: run the command again."
     )]
     DeviceFailed(String),
     /// Writing the new boot sectors and restoring the original ones both failed.
     #[error(
-        "das Gerät meldet „install_fatal“: die Bootsektoren konnten weder geschrieben noch \
-         wiederhergestellt werden. Gerät NICHT vom Strom trennen und nicht neu starten – die \
-         Migrationsfirmware läuft weiter und nimmt einen neuen Versuch an: Befehl sofort erneut \
-         ausführen. Schlägt auch das fehl oder verliert das Gerät den Strom, ist eine \
-         Wiederherstellung über die serielle Schnittstelle nötig."
+        "the device reports \"install_fatal\": the boot sectors could neither be written nor \
+         restored. Do NOT cut the power or restart the device – the migration firmware keeps \
+         running and accepts another attempt: run the command again right away. If that fails \
+         too or the device loses power, recovery over the serial interface is required."
     )]
     InstallFatal,
     /// The job did not finish in time.
-    #[error("Zeitüberschreitung beim Flashen; Status mit `probe` prüfen und erneut ausführen")]
+    #[error("timeout while flashing; check the state with `probe` and run the command again")]
     FlashTimeout,
     /// ESPHome did not answer after installation.
     #[error(
-        "ESPHome antwortet nicht auf {0}. Gerät im ESPHome-Dashboard oder im Router suchen \
-         (neue IP-Adresse?)."
+        "ESPHome does not answer on {0}. Look for the device in the ESPHome dashboard or your \
+         router (new IP address?)."
     )]
     EsphomeNotSeen(SocketAddr),
 }
@@ -237,10 +244,10 @@ fn device_failure(error: String) -> FlashError {
 
 fn stock_summary(model: Model, firmware: &str, rssi_dbm: i32, image: &FirmwareImage) -> String {
     format!(
-        "Gerät: {} ({}), Originalfirmware {firmware}, WLAN {rssi_dbm} dBm\n\
-         Neue Firmware: {} Bytes, SHA-256 {}\n\
-         Ablauf: Migrationsfirmware installieren, dann ESPHome. Ein Zurück zur Shelly-Firmware \
-         ist danach nur noch per Kabel sicher möglich.",
+        "Device: {} ({}), stock firmware {firmware}, Wi-Fi {rssi_dbm} dBm\n\
+         New firmware: {} bytes, SHA-256 {}\n\
+         Steps: install the migration firmware, then ESPHome. Going back to the Shelly firmware \
+         afterwards is only safely possible over a cable.",
         model.build_name(),
         model.device_type(),
         image.len(),
@@ -250,14 +257,14 @@ fn stock_summary(model: Model, firmware: &str, rssi_dbm: i32, image: &FirmwareIm
 
 fn resume_summary(image: &FirmwareImage, last_error: &str) -> String {
     let warning = if last_error == INSTALL_FATAL {
-        "\nACHTUNG: Der letzte Versuch hat die Bootsektoren beschädigt hinterlassen. Bis zum \
-         erfolgreichen Abschluss Strom nicht trennen und nicht neu starten."
+        "\nWARNING: The last attempt left the boot sectors broken. Do not cut the power or \
+         restart the device until this run has finished."
     } else {
         ""
     };
     format!(
-        "Das Gerät läuft bereits mit der Migrationsfirmware.\n\
-         Neue Firmware: {} Bytes, SHA-256 {}{warning}",
+        "The device already runs the migration firmware.\n\
+         New firmware: {} bytes, SHA-256 {}{warning}",
         image.len(),
         image.sha256_hex()
     )
@@ -323,8 +330,7 @@ async fn monitor_flash(
                     }
                     MigrationState::Installing if !installing => {
                         installing = true;
-                        reporter
-                            .info("Firmware geprüft, wird installiert – Strom jetzt nicht trennen");
+                        reporter.info("Firmware verified, installing – do not cut the power now");
                     }
                     MigrationState::Installing
                     | MigrationState::Downloading
@@ -413,6 +419,11 @@ pub async fn run(
             if !reporter.confirm(&stock_summary(model, &info.fw, rssi_dbm, image)) {
                 return Err(FlashError::Aborted);
             }
+            // Still read-only: a failed backup stops here with nothing changed.
+            if let Some(parent) = &options.backup_dir {
+                let directory = backup::collect(client).await?.write_to(parent)?;
+                reporter.info(&format!("Stock settings saved to {}", directory.display()));
+            }
             (Some(package), None)
         }
         Firmware::Migration(status) => {
@@ -441,16 +452,16 @@ pub async fn run(
     let (migration_client, status) = match migration_status {
         Some(status) => (client.clone(), status),
         None => {
-            reporter.info("Migrationsfirmware wird an das Gerät übergeben …");
+            reporter.info("Handing the migration firmware to the device …");
             client.start_stock_ota(&server.url(PACKAGE_PATH)).await?;
             wait_for_package(&server, &options.timeouts, server.address()).await?;
-            reporter.info("Migrationspaket abgeholt, Gerät startet neu …");
+            reporter.info("Migration package fetched, device restarts …");
             // The migration firmware always listens on its own port.
             let migration_host =
                 SocketAddr::new(device_address.ip(), options.migration_port).to_string();
             let migration_client = DeviceClient::new(&migration_host, None)?;
             let status = wait_for_migration_firmware(&migration_client, &options.timeouts).await?;
-            reporter.info("Migrationsfirmware läuft");
+            reporter.info("Migration firmware is running");
             (migration_client, status)
         }
     };
@@ -461,8 +472,8 @@ pub async fn run(
     }
 
     reporter.info(
-        "ESPHome-Firmware wird übertragen und geprüft; danach installiert das Gerät sofort. \
-         Ab jetzt bis zur Meldung „Fertig“ den Strom nicht trennen.",
+        "Transferring and verifying the ESPHome firmware; the device installs it right after. \
+         Do not cut the power from now on until \"Done\" is shown.",
     );
     migration_client
         .start_migration(&server.url(IMAGE_PATH), image.len(), image.sha256_hex())
@@ -470,7 +481,7 @@ pub async fn run(
     monitor_flash(&migration_client, &server, image_len, &options.timeouts, reporter).await?;
     reporter.progress(image_len, image_len);
 
-    reporter.info("Warte auf ESPHome …");
+    reporter.info("Waiting for ESPHome …");
     let esphome_address = SocketAddr::new(device_address.ip(), options.esphome_port);
     wait_for_esphome(esphome_address, &options.timeouts).await?;
     Ok(FlashOutcome { esphome_address })

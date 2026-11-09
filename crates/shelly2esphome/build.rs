@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         if entries.is_empty() {
-            return Err(format!("{PACKAGES_DIR}={} enthält keine Pakete", dir.display()).into());
+            return Err(format!("{PACKAGES_DIR}={} contains no packages", dir.display()).into());
         }
     }
     entries.sort();
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(code, "    ({name:?}, include_bytes!({:?})),", path.display().to_string())?;
     }
     code.push_str("];\n");
-    let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR fehlt")?);
+    let out = PathBuf::from(env::var_os("OUT_DIR").ok_or("OUT_DIR is not set")?);
     fs::write(out.join("embedded_packages.rs"), code)?;
     Ok(())
 }
