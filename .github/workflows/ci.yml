@@ -152,8 +152,10 @@ jobs:
             target/aarch64-apple-darwin/release/shelly2esphome \
             target/x86_64-apple-darwin/release/shelly2esphome
           ./shelly2esphome --version
+          # upload-artifact does not keep the executable bit; a tarball does.
+          tar -czf shelly2esphome-macos-universal.tar.gz shelly2esphome
       - uses: actions/upload-artifact@v4
         with:
           name: shelly2esphome-macos-universal
-          path: shelly2esphome
+          path: shelly2esphome-macos-universal.tar.gz
           if-no-files-found: error

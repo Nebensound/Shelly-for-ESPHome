@@ -21,25 +21,32 @@ live here were removed on purpose; do not reintroduce them.
   - `main.rs` is the console UI.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
   - `src/main.c` is the hardware glue: rboot, SPI flash, HTTP, RPC.
-  - `src/mg2x_job.c`, `src/mg2x_writer.c` and `src/mg2x_sha256.c` are hardware independent and
-    unit tested on the host (`test/`).
+  - `src/mg2x_job.c`, `src/mg2x_writer.c`, `src/mg2x_install.c` and
+    `src/mg2x_sha256.c` are hardware independent and unit tested on the host
+    (`test/`, 100 % line/branch/function coverage). The installer tests inject
+    a failure at every single flash operation.
 
 ## Invariants
 
 1. **Nothing outside the staging slot is written before the image is fully
    verified.** That covers the received size equal to the announced size, the
-   first byte `0xE9`, and the SHA-256 digest. The bootloader is written as the
-   very last step.
+   first byte `0xE9`, and the SHA-256 digest. The boot config and the
+   bootloader are written as the very last steps; the original ones are kept
+   in scratch sectors and written back if that fails.
 2. **A failed job never leaves the device unreachable.** The migration
    firmware keeps running and accepts a new `MG2X.Flash`.
 3. The CLI performs every refusal (model, package, signal, login, confirmation)
    **before** the first request that changes the device.
-4. `MG2X_PROTOCOL_VERSION` in `main.c` and `MIGRATION_PROTOCOL` in `device.rs`
-   change together. The RPC field names (`url`, `size`, `sha256`, `state`,
-   `received`, `max_size`, `error`) are the contract between both.
+4. `MG2X_PROTOCOL_VERSION` and the marker `shelly2esphome-mg2x-protocol=N` in
+   `main.c` and `MIGRATION_PROTOCOL` in `device.rs` change together. The RPC
+   field names (`url`, `size`, `sha256`, `state`, `received`, `max_size`,
+   `error`) and state names are the contract between both.
 5. The model table in `model.rs` mirrors the `conds` in
    `migration_firmware/mos.yml`. CI checks every built package's manifest name
    against `mos.yml`.
+6. The migration firmware never serves files over HTTP
+   (`http.document_root` is empty); its filesystem holds the Wi-Fi
+   credentials.
 
 ## Conventions
 

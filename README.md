@@ -78,8 +78,8 @@ CI builds one package per model: `mg2esphome-<Model>.zip`, for example
 ### 3. Run the tool
 
 Install the tool with `cargo install --git https://github.com/Nebensound/Shelly-for-ESPHome shelly2esphome`.
-Alternatively, download the macOS binary from the CI artifacts
-(`shelly2esphome-macos-universal`). Then run:
+Alternatively, download `shelly2esphome-macos-universal.tar.gz` from the CI
+artifacts and unpack it (`tar -xzf …`). Then run:
 
 ```sh
 shelly2esphome probe 10.10.5.79
@@ -93,6 +93,11 @@ reproduce them in ESPHome; they are lost afterwards.
 
 `flash` shows a summary and asks for confirmation before it changes anything.
 It refuses to run when:
+
+- `firmware.bin` is incomplete or damaged (segments, checksums and the
+  embedded CRC are checked) or too large for the device,
+- the package is not this project's migration firmware in the matching
+  protocol version,
 
 - the device type is unsupported,
 - the package was built for another model,
@@ -119,6 +124,12 @@ is wrong.
 
 - **Device waits in the migration firmware:** run `flash` again; it resumes
   without the package. `probe` shows the state and the last error.
+- **Migration firmware could not move itself into slot 1** (`probe` shows
+  `RelocationFailed`): it restarts and retries on its own; run `flash` again a
+  minute later.
+- **Installing the new boot sectors failed:** the migration firmware writes the
+  original boot sectors back and reports `install_retryable`; run `flash` again.
+  Only `install_fatal` (writing and restoring both failed) needs a cable.
 - **Migration firmware cannot join your Wi-Fi:** it falls back to the SSID
   `mgos-recover` with the password `RJoPuKC3u5`. Start a hotspot with these
   credentials and run the tool against the address the device gets there.
@@ -130,10 +141,14 @@ is wrong.
 
 ## Security
 
-While the migration firmware waits for `MG2X.Flash`, anyone in the same
-network can hand it a firmware image. This is the same exposure as a stock
-Shelly without login. Run the migration in one go and do not leave devices
-waiting.
+- The tool serves `firmware.bin` (which contains your Wi-Fi credentials) under
+  a random path per run and only to the device's IP address.
+- The migration firmware serves no files over HTTP; only `/rpc` and the
+  `/update` recovery endpoint exist.
+- While the migration firmware waits for `MG2X.Flash`, anyone in the same
+  network can hand it a firmware image. This is the same exposure as a stock
+  Shelly without login. Run the migration in one go and do not leave devices
+  waiting.
 
 ## Development
 
