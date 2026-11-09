@@ -69,22 +69,26 @@ Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
   true`. ESPHome then reflashes the STM32 co-processor on first boot; there is
   no way back to the Shelly STM32 firmware.
 
-### 2. Get the migration package for the model
+### 2. Get the tool
 
-CI builds one package per model: `mg2esphome-<Model>.zip`, for example
-`mg2esphome-Shelly1PM.zip`. Download it from the artifacts of the CI run
-(Actions tab). `shelly2esphome probe` tells you which file the device needs.
+Download `shelly2esphome-macos-universal.tar.gz` from the artifacts of the CI
+run (Actions tab) and unpack it (`tar -xzf …`). This binary contains the
+migration packages of all supported models; `flash` detects the model and
+picks the matching one itself.
+
+Alternatively, install it with
+`cargo install --git https://github.com/Nebensound/Shelly-for-ESPHome shelly2esphome`.
+Such a build contains no migration packages: download `mg2esphome-<Model>.zip`
+from the CI artifacts and pass it with `--migration`. `shelly2esphome probe`
+tells you whether the package is built in and otherwise which file the device
+needs.
 
 ### 3. Run the tool
-
-Install the tool with `cargo install --git https://github.com/Nebensound/Shelly-for-ESPHome shelly2esphome`.
-Alternatively, download `shelly2esphome-macos-universal.tar.gz` from the CI
-artifacts and unpack it (`tar -xzf …`). Then run:
 
 ```sh
 shelly2esphome probe 10.10.5.79
 shelly2esphome check firmware.bin
-shelly2esphome flash 10.10.5.79 --firmware firmware.bin --migration mg2esphome-Shelly1PM.zip --port 8266
+shelly2esphome flash 10.10.5.79 --firmware firmware.bin --port 8266
 ```
 
 Before flashing, save the device's stock settings (`/settings`,
@@ -171,6 +175,10 @@ The migration firmware itself is built by CI with
 it locally, run
 `mos build --local --platform esp8266 --build-var MODEL=Shelly1PM` in
 `migration_firmware/`.
+
+To embed the packages into a local CLI build like CI does, put all
+`mg2esphome-<Model>.zip` into one directory and build with
+`SHELLY2ESPHOME_PACKAGES_DIR=<directory> cargo build --release`.
 
 See [AGENTS.md](AGENTS.md) for architecture, invariants and conventions.
 

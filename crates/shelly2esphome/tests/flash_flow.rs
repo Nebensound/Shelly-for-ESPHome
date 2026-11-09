@@ -19,6 +19,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use shelly2esphome::{
     device::{DeviceClient, DeviceError, MigrationState},
+    embedded::Packages,
     flash::{self, FlashError, FlashOptions, Reporter, Timeouts},
     image::{FirmwareImage, MIN_IMAGE_BYTES, synthetic},
     migration::{MigrationPackage, PackageError},
@@ -278,6 +279,8 @@ fn options(shared: &Shared) -> FlashOptions {
             esphome_boot: Duration::from_secs(5),
             poll_interval: Duration::from_millis(20),
         },
+        // Independent of how the test binary was built.
+        embedded_packages: Packages(&[]),
         ..FlashOptions::default()
     }
 }
@@ -395,6 +398,22 @@ async fn refuses_a_package_for_another_model() {
         .unwrap_err();
     assert!(matches!(error, FlashError::Package(PackageError::WrongModel { .. })));
     assert_eq!(shared.lock().unwrap().ota_requests, 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn picks_the_embedded_package_of_the_detected_model() {
+    let (host, shared) = start_fake(fake(Mode::Stock)).await;
+    let wrong = package(Model::Shelly1Pm).bytes().to_vec().leak();
+    let right = package(Model::ShellyDimmer2).bytes().to_vec().leak();
+    let packages: &'static [_] =
+        vec![("mg2esphome-Shelly1PM.zip", &*wrong), ("mg2esphome-ShellyDimmer2.zip", &*right)]
+            .leak();
+    let options = FlashOptions { embedded_packages: Packages(packages), ..options(&shared) };
+    let client = DeviceClient::new(&host, None).unwrap();
+    flash::run(&host, &client, &image(), None, &options, &mut Recorder::default()).await.unwrap();
+    let fake = shared.lock().unwrap();
+    assert_eq!(fake.package, right.to_vec());
+    assert_eq!(fake.mode, Mode::Esphome);
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -11,6 +11,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use shelly2esphome::{
     device::{Credentials, DeviceClient, Firmware},
+    embedded::Packages,
     flash::{self, FlashOptions, Reporter},
     image::FirmwareImage,
     migration::MigrationPackage,
@@ -47,7 +48,8 @@ enum Command {
         /// ESPHome `firmware.bin` built for this device, Wi-Fi settings included.
         #[arg(long, short)]
         firmware: PathBuf,
-        /// Migration package `mg2esphome-<Model>.zip` from CI (needed from stock firmware).
+        /// Migration package `mg2esphome-<Model>.zip`; only needed from stock firmware if this
+        /// build does not contain it (CI release binaries contain all models).
         #[arg(long, short)]
         migration: Option<PathBuf>,
         /// Login if the web authentication of the stock firmware is enabled.
@@ -118,9 +120,13 @@ async fn probe(host: &str, auth: Option<Credentials>) -> anyhow::Result<()> {
             println!("Originalfirmware: {} ({}), MAC {}", info.device_type, info.fw, info.mac);
             println!("WLAN-Signal: {rssi_dbm} dBm");
             match Model::from_device_type(&info.device_type) {
-                Some(model) => {
-                    println!("Unterstützt; Migrationspaket: {}", model.migration_asset_name())
+                Some(model) if Packages::BUILT_IN.find(model).is_some() => {
+                    println!("Unterstützt; Migrationspaket ist in diesem Programm enthalten.");
                 }
+                Some(model) => println!(
+                    "Unterstützt; Migrationspaket nicht enthalten: für flash --migration {} angeben.",
+                    model.migration_asset_name()
+                ),
                 None => println!("Dieser Gerätetyp wird nicht unterstützt."),
             }
             if info.auth {

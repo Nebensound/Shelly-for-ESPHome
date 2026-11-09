@@ -6,6 +6,7 @@
 //! the bootloader and the application.
 
 pub mod device;
+pub mod embedded;
 pub mod flash;
 pub mod image;
 pub mod migration;

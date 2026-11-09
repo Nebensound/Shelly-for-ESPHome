@@ -137,14 +137,29 @@ jobs:
 
   cli-macos:
     name: CLI – macOS binary
-    needs: cli
+    needs: [cli, migration-firmware]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
+      # The release binary embeds the migration packages of all models, so
+      # `flash` picks the right one itself (crates/shelly2esphome/build.rs).
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mg2esphome-*
+          path: packages
+          merge-multiple: true
+      - name: Check that every model has a package
+        run: |
+          expected=$(grep -c '^  *(Model::' crates/shelly2esphome/src/model.rs)
+          found=$(ls packages/mg2esphome-*.zip | wc -l | tr -d ' ')
+          echo "packages: $found of $expected"
+          test "$found" -eq "$expected"
       - name: Build universal binary
+        env:
+          SHELLY2ESPHOME_PACKAGES_DIR: ${{ github.workspace }}/packages
         run: |
           cargo build --release --locked --target aarch64-apple-darwin
           cargo build --release --locked --target x86_64-apple-darwin

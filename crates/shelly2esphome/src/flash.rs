@@ -13,6 +13,7 @@ use tokio::time::{Instant, sleep, timeout};
 
 use crate::{
     device::{DeviceClient, DeviceError, Firmware, MigrationState, MigrationStatus},
+    embedded::Packages,
     image::FirmwareImage,
     migration::{MigrationPackage, PackageError},
     model::Model,
@@ -67,6 +68,8 @@ pub struct FlashOptions {
     pub migration_port: u16,
     /// Phase time limits.
     pub timeouts: Timeouts,
+    /// Migration packages used when no package is given explicitly.
+    pub embedded_packages: Packages,
 }
 
 impl Default for FlashOptions {
@@ -79,6 +82,7 @@ impl Default for FlashOptions {
             esphome_port: 6053,
             migration_port: 80,
             timeouts: Timeouts::default(),
+            embedded_packages: Packages::BUILT_IN,
         }
     }
 }
@@ -127,7 +131,11 @@ pub enum FlashError {
         min_rssi_dbm: i32,
     },
     /// The device runs stock firmware but no migration package was given.
-    #[error("das Gerät läuft mit der Originalfirmware: bitte --migration {0} angeben")]
+    #[error(
+        "das Gerät läuft mit der Originalfirmware und dieses Programm enthält kein \
+         Migrationspaket dafür: bitte --migration {0} angeben oder das macOS-Binary aus der CI \
+         verwenden"
+    )]
     PackageRequired(String),
     /// The user declined the confirmation.
     #[error("abgebrochen, nichts verändert")]
@@ -372,6 +380,7 @@ pub async fn run(
         None => local_ip_towards(device_address.ip())?,
     };
     let firmware = client.identify().await?;
+    let embedded_package;
 
     let (stock, migration_status) = match firmware {
         Firmware::Stock { info, rssi_dbm } => {
@@ -383,8 +392,17 @@ pub async fn run(
                     min_rssi_dbm: options.min_rssi_dbm,
                 });
             }
-            let package =
-                package.ok_or_else(|| FlashError::PackageRequired(model.migration_asset_name()))?;
+            let package = match package {
+                Some(package) => package,
+                None => {
+                    let bytes = options
+                        .embedded_packages
+                        .find(model)
+                        .ok_or_else(|| FlashError::PackageRequired(model.migration_asset_name()))?;
+                    embedded_package = MigrationPackage::parse(bytes::Bytes::from_static(bytes))?;
+                    &embedded_package
+                }
+            };
             package.ensure_model(model)?;
             if image.len() > model.max_image_bytes() {
                 return Err(FlashError::ImageTooLarge {

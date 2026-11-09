@@ -15,6 +15,10 @@ live here were removed on purpose; do not reintroduce them.
   - `model.rs` maps device types to migration build names and stock app names.
   - `image.rs` validates ESP8266 images.
   - `migration.rs` validates the migration package.
+  - `embedded.rs` holds the migration packages that `build.rs` compiles in when
+    `SHELLY2ESPHOME_PACKAGES_DIR` is set (CI release binary: all models).
+    An explicit `--migration` always takes precedence; embedded packages pass
+    the same validation as files.
   - `device.rs` holds the HTTP client for the stock and migration firmware.
   - `server.rs` is the local file server.
   - `flash.rs` holds the procedure and its safety checks.
