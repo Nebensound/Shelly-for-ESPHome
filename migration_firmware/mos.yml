@@ -19,6 +19,9 @@ config_schema:
   - ["conf_acl", "wifi.sta.*,device.*"]
   - ["http.enable", true]
   - ["http.listen_addr", "80"]
+  # No static file serving: the filesystem holds conf9.json with the Wi-Fi
+  # credentials. Only /rpc and the /update recovery endpoint are needed.
+  - ["http.document_root", ""]
   - ["rpc.enable", true]
   - ["rpc.http_enable", true]
   - ["debug.level", 2] # 0 = ERROR, 1 = WARN, 2 = INFO, 3+ = DEBUG

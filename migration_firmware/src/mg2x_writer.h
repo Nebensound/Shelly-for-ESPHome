@@ -11,14 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define MG2X_SECTOR_BYTES 4096u
-
-typedef struct {
-  /* Both return 0 on success, like the ESP8266 SDK functions they wrap. */
-  int (*erase_sector)(void *ctx, uint32_t sector_index);
-  int (*write)(void *ctx, uint32_t address, const uint8_t *data, uint32_t len_bytes);
-  void *ctx;
-} mg2x_flash_ops;
+#include "mg2x_flash.h"
 
 typedef enum {
   MG2X_WRITER_OK = 0,

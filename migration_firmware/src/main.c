@@ -10,7 +10,9 @@
  *  - the image is verified (size, magic byte, SHA-256) before anything outside
  *    the staging area is touched; on any error the device stays in this
  *    firmware and accepts a new MG2X.Flash request,
- *  - progress and errors are reported via MG2X.Status.
+ *  - progress and errors are reported via MG2X.Status,
+ *  - the original boot sectors are kept and written back if installing the
+ *    new ones fails (see mg2x_install.h).
  *
  * Flash layout during the job (rboot, two ROM slots):
  *   0x0                bootloader            <- overwritten last
@@ -24,22 +26,29 @@
 #include "spi_flash.h"
 #include "esp_rboot.h"
 
+#include "mg2x_install.h"
 #include "mg2x_job.h"
 #include "mg2x_writer.h"
 
-#define MG2X_PROTOCOL_VERSION 1
+#define MG2X_PROTOCOL_VERSION 2
 #define MG2X_STAGING_ROM 0
 #define MG2X_RUNNING_ROM 1
-#define MG2X_SCRATCH_SECTORS 3u
+/* Scratch sectors of the installer plus one sector of margin. */
+#define MG2X_RESERVED_SECTORS (MG2X_INSTALL_SCRATCH_SECTORS + 1u)
+#define MG2X_RELOCATION_RETRY_MS 30000
 #define MG2X_MAX_REDIRECTS 3
 #define MG2X_STALL_TIMEOUT_MICROS (60 * 1000 * 1000)
 #define MG2X_WATCHDOG_INTERVAL_MS 5000
+
+/* The CLI checks the migration package for this exact marker. */
+static const char s_marker[] = "shelly2esphome-mg2x-protocol=2";
 
 typedef enum {
   MG2X_STATE_IDLE,
   MG2X_STATE_DOWNLOADING,
   MG2X_STATE_INSTALLING,
-  MG2X_STATE_FAILED
+  MG2X_STATE_FAILED,
+  MG2X_STATE_RELOCATION_FAILED
 } mg2x_state;
 
 static rboot_config *s_rboot_cfg;
@@ -62,6 +71,8 @@ static const char *state_str(mg2x_state state) {
     return "installing";
   case MG2X_STATE_FAILED:
     return "failed";
+  case MG2X_STATE_RELOCATION_FAILED:
+    return "relocation_failed";
   }
   return "unknown";
 }
@@ -76,16 +87,25 @@ static uint32_t staging_address(void) { return s_rboot_cfg->roms[MG2X_STAGING_RO
 
 static uint32_t running_address(void) { return s_rboot_cfg->roms[s_rboot_cfg->current_rom]; }
 
-/* Largest image that leaves room for the two scratch sectors used below. */
+/* Largest image that leaves room for the installer's scratch sectors. */
 static uint32_t max_image_bytes(void) {
+  if (s_rboot_cfg->current_rom != MG2X_RUNNING_ROM) {
+    return 0u; /* staging is only possible once we run from slot 1 */
+  }
   uint32_t area = running_address() - staging_address();
-  uint32_t reserved = MG2X_SCRATCH_SECTORS * MG2X_SECTOR_BYTES;
+  uint32_t reserved = MG2X_RESERVED_SECTORS * MG2X_SECTOR_BYTES;
   return area > reserved ? area - reserved : 0u;
 }
 
 /* The install step moves the region behind the boot config separately. */
 static uint32_t min_image_bytes(void) {
   return (uint32_t)BOOT_CONFIG_ADDR + 2u * MG2X_SECTOR_BYTES;
+}
+
+static int flash_read(void *ctx, uint32_t address, uint8_t *data, uint32_t len_bytes) {
+  (void)ctx;
+  return spi_flash_read(address, (uint32 *)(uintptr_t)data, len_bytes) == SPI_FLASH_RESULT_OK ? 0
+                                                                                              : 1;
 }
 
 static int flash_erase(void *ctx, uint32_t sector_index) {
@@ -95,58 +115,27 @@ static int flash_erase(void *ctx, uint32_t sector_index) {
 
 static int flash_write(void *ctx, uint32_t address, const uint8_t *data, uint32_t len_bytes) {
   (void)ctx;
-  /* writer.block is 4-byte aligned and len_bytes is a multiple of 4. */
+  /* All callers pass 4-byte aligned buffers and lengths that are multiples of 4. */
   return spi_flash_write(address, (uint32 *)(uintptr_t)data, len_bytes) == SPI_FLASH_RESULT_OK ? 0
                                                                                                : 1;
 }
 
-/*
- * Copies `len_bytes` (rounded up to whole words) sector by sector. Source and
- * destination are sector aligned; copying downwards with src > dest is safe
- * for overlapping regions because each sector is read before it is erased.
- */
-static bool block_copy(uint32_t src, uint32_t dest, uint32_t len_bytes) {
-  uint8_t *buffer = s_writer.block; /* free again after the final flush */
-  uint32_t total = (len_bytes + 3u) & ~3u;
-  for (uint32_t offset = 0; offset < total; offset += MG2X_SECTOR_BYTES) {
-    uint32_t chunk = total - offset < MG2X_SECTOR_BYTES ? total - offset : MG2X_SECTOR_BYTES;
-    if (spi_flash_read(src + offset, (uint32 *)(uintptr_t)buffer, chunk) != SPI_FLASH_RESULT_OK ||
-        spi_flash_erase_sector((uint16)((dest + offset) / MG2X_SECTOR_BYTES)) !=
-            SPI_FLASH_RESULT_OK ||
-        spi_flash_write(dest + offset, (uint32 *)(uintptr_t)buffer, chunk) != SPI_FLASH_RESULT_OK) {
-      LOG(LL_ERROR, ("block copy 0x%lx -> 0x%lx failed at offset %lu", (unsigned long)src,
-                     (unsigned long)dest, (unsigned long)offset));
-      return false;
-    }
-  }
-  return true;
-}
+static const mg2x_flash_ops s_flash_ops = {flash_read, flash_erase, flash_write, NULL};
 
 /* Moves the verified image from the staging area to 0x0 and restarts. */
 static void install(void) {
   s_state = MG2X_STATE_INSTALLING;
-  uint32_t staging = staging_address();
-  uint32_t received = s_job.received_bytes;
-  uint32_t scratch_boot = mg2x_writer_end_address(&s_writer);
-  uint32_t scratch_config = scratch_boot + MG2X_SECTOR_BYTES;
-  uint32_t boot_config = (uint32_t)BOOT_CONFIG_ADDR;
-
-  LOG(LL_INFO, ("image verified (%lu bytes), installing", (unsigned long)received));
-
-  /* Keep bootloader and boot config of the new image aside ... */
-  bool ok =
-      block_copy(staging, scratch_boot, MG2X_SECTOR_BYTES) &&
-      block_copy(staging + boot_config, scratch_config, MG2X_SECTOR_BYTES) &&
-      /* ... move everything between them ... */
-      block_copy(staging + MG2X_SECTOR_BYTES, MG2X_SECTOR_BYTES, boot_config - MG2X_SECTOR_BYTES) &&
-      /* ... and everything after the boot config ... */
-      block_copy(staging + boot_config + MG2X_SECTOR_BYTES, boot_config + MG2X_SECTOR_BYTES,
-                 received - boot_config - MG2X_SECTOR_BYTES) &&
-      /* ... then the boot config and the bootloader as the very last step. */
-      block_copy(scratch_config, boot_config, MG2X_SECTOR_BYTES) &&
-      block_copy(scratch_boot, 0, MG2X_SECTOR_BYTES);
-  if (!ok) {
-    fail("install_copy");
+  mg2x_install_layout layout = {
+      .staging_address = staging_address(),
+      .image_bytes = s_job.received_bytes,
+      .boot_config_address = (uint32_t)BOOT_CONFIG_ADDR,
+      .limit_address = running_address(),
+  };
+  LOG(LL_INFO, ("image verified (%lu bytes), installing", (unsigned long)layout.image_bytes));
+  /* writer.block is free again after the final flush. */
+  mg2x_install_result result = mg2x_install(&s_flash_ops, &layout, s_writer.block);
+  if (result != MG2X_INSTALL_OK) {
+    fail(mg2x_install_result_str(result));
     return;
   }
   LOG(LL_INFO, ("install done, restarting into the new firmware"));
@@ -287,8 +276,8 @@ static void rpc_flash(struct mg_rpc_request_info *ri, void *cb_arg, struct mg_rp
                                                 min_image_bytes(), max_image_bytes(), sha256);
     mg2x_writer_result writer_result = MG2X_WRITER_OK;
     if (job_result == MG2X_JOB_OK) {
-      mg2x_flash_ops ops = {flash_erase, flash_write, NULL};
-      writer_result = mg2x_writer_init(&s_writer, ops, staging_address(), running_address());
+      writer_result =
+          mg2x_writer_init(&s_writer, s_flash_ops, staging_address(), running_address());
     }
     if (job_result != MG2X_JOB_OK) {
       mg_rpc_send_errorf(ri, 400, "%s", mg2x_job_result_str(job_result));
@@ -314,15 +303,23 @@ static void rpc_flash(struct mg_rpc_request_info *ri, void *cb_arg, struct mg_rp
   (void)fi;
 }
 
+static void restart_cb(void *arg) {
+  (void)arg;
+  mgos_system_restart();
+}
+
 enum mgos_app_init_result mgos_app_init(void) {
   s_rboot_cfg = get_rboot_config();
+  LOG(LL_INFO, ("%s", s_marker));
 
   if (s_rboot_cfg->current_rom == MG2X_STAGING_ROM) {
     /* Move ourselves into slot 1 so slot 0 becomes the staging area. */
     LOG(LL_INFO, ("booted from slot 0, moving to slot 1"));
-    bool ok = block_copy(s_rboot_cfg->roms[0], s_rboot_cfg->roms[1], s_rboot_cfg->roms_sizes[0]) &&
-              block_copy(s_rboot_cfg->fs_addresses[0], s_rboot_cfg->fs_addresses[1],
-                         s_rboot_cfg->fs_sizes[0]);
+    bool ok =
+        mg2x_flash_copy(&s_flash_ops, s_rboot_cfg->roms[0], s_rboot_cfg->roms[1],
+                        s_rboot_cfg->roms_sizes[0], s_writer.block) &&
+        mg2x_flash_copy(&s_flash_ops, s_rboot_cfg->fs_addresses[0], s_rboot_cfg->fs_addresses[1],
+                        s_rboot_cfg->fs_sizes[0], s_writer.block);
     if (ok) {
       s_rboot_cfg->current_rom = MG2X_RUNNING_ROM;
       s_rboot_cfg->previous_rom = MG2X_STAGING_ROM;
@@ -330,6 +327,14 @@ enum mgos_app_init_result mgos_app_init(void) {
       s_rboot_cfg->is_first_boot = 1;
       rboot_set_config(s_rboot_cfg);
       mgos_system_restart_after(200);
+    } else {
+      /* Still booting from slot 0: report it and retry after a restart. Image
+       * staging stays disabled (no MG2X.Flash) until we run from slot 1. */
+      s_state = MG2X_STATE_RELOCATION_FAILED;
+      snprintf(s_error, sizeof(s_error), "%s", "relocation_copy");
+      LOG(LL_ERROR, ("moving to slot 1 failed, retrying after restart"));
+      mg_rpc_add_handler(mgos_rpc_get_global(), "MG2X.Status", "", rpc_status, NULL);
+      mgos_set_timer(MG2X_RELOCATION_RETRY_MS, 0, restart_cb, NULL);
     }
     return MGOS_APP_INIT_SUCCESS;
   }

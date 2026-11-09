@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "../src/mg2x_install.h"
 #include "../src/mg2x_job.h"
 #include "../src/mg2x_sha256.h"
 #include "../src/mg2x_writer.h"
@@ -176,10 +177,38 @@ typedef struct {
   int fail_write_at_call;
   int erase_calls;
   int write_calls;
+  /* Generic failure injection over all operations (read, erase, write). */
+  int ops;
+  int fail_op_at;
+  int fail_persistent;
+  int fail_op_at_second;
 } fake_flash;
+
+static int op_fails(fake_flash *flash) {
+  flash->ops++;
+  if (flash->fail_op_at_second != 0 && flash->ops == flash->fail_op_at_second) {
+    return 1;
+  }
+  if (flash->fail_op_at == 0) {
+    return 0;
+  }
+  return flash->fail_persistent ? flash->ops >= flash->fail_op_at : flash->ops == flash->fail_op_at;
+}
+
+static int fake_read(void *ctx, uint32_t address, uint8_t *data, uint32_t len_bytes) {
+  fake_flash *flash = ctx;
+  if (op_fails(flash) || address + len_bytes > FAKE_FLASH_BYTES) {
+    return 1;
+  }
+  memcpy(data, &flash->bytes[address], len_bytes);
+  return 0;
+}
 
 static int fake_erase(void *ctx, uint32_t sector_index) {
   fake_flash *flash = ctx;
+  if (op_fails(flash)) {
+    return 1;
+  }
   flash->erase_calls++;
   if (flash->erase_calls == flash->fail_erase_at_call) {
     return 1;
@@ -190,6 +219,9 @@ static int fake_erase(void *ctx, uint32_t sector_index) {
 
 static int fake_write(void *ctx, uint32_t address, const uint8_t *data, uint32_t len_bytes) {
   fake_flash *flash = ctx;
+  if (op_fails(flash)) {
+    return 1;
+  }
   flash->write_calls++;
   if (flash->write_calls == flash->fail_write_at_call) {
     return 1;
@@ -210,7 +242,7 @@ static fake_flash *new_flash(void) {
 }
 
 static mg2x_flash_ops ops_for(fake_flash *flash) {
-  mg2x_flash_ops ops = {fake_erase, fake_write, flash};
+  mg2x_flash_ops ops = {fake_read, fake_erase, fake_write, flash};
   return ops;
 }
 
@@ -293,6 +325,158 @@ static void test_writer_result_strings(void) {
   CHECK(strcmp(mg2x_writer_result_str((mg2x_writer_result)99), "unknown") == 0);
 }
 
+/* ---- installer ---------------------------------------------------------- */
+
+#define S MG2X_SECTOR_BYTES
+#define INSTALL_IMAGE_BYTES 40000u
+#define INSTALL_STAGING (16u * S)
+#define INSTALL_LIMIT (48u * S)
+
+static _Alignas(4) uint8_t s_install_buffer[MG2X_SECTOR_BYTES];
+
+static fake_flash *prepared_flash(uint32_t boot_config) {
+  fake_flash *flash = new_flash();
+  memset(flash->bytes, 0xFF, sizeof(flash->bytes));
+  memset(&flash->bytes[0], 0xB0, S);           /* current bootloader */
+  memset(&flash->bytes[boot_config], 0xC0, S); /* current boot config */
+  for (uint32_t i = 0; i < INSTALL_IMAGE_BYTES; i++) {
+    flash->bytes[INSTALL_STAGING + i] = (uint8_t)(i % 251u);
+  }
+  flash->bytes[INSTALL_STAGING] = MG2X_IMAGE_MAGIC;
+  return flash;
+}
+
+static int boot_sectors_unchanged(const fake_flash *flash, uint32_t boot_config) {
+  for (uint32_t i = 0; i < S; i++) {
+    if (flash->bytes[i] != 0xB0 || flash->bytes[boot_config + i] != 0xC0) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+static mg2x_install_layout layout_for(uint32_t boot_config) {
+  mg2x_install_layout layout = {INSTALL_STAGING, INSTALL_IMAGE_BYTES, boot_config, INSTALL_LIMIT};
+  return layout;
+}
+
+static void test_install_moves_the_image_into_place(void) {
+  static const uint32_t configs[] = {0x1000u, 0x7000u};
+  for (size_t c = 0; c < 2u; c++) {
+    fake_flash *flash = prepared_flash(configs[c]);
+    uint8_t *expected = malloc(INSTALL_IMAGE_BYTES);
+    CHECK(expected != NULL);
+    memcpy(expected, &flash->bytes[INSTALL_STAGING], INSTALL_IMAGE_BYTES);
+    mg2x_flash_ops ops = ops_for(flash);
+    mg2x_install_layout layout = layout_for(configs[c]);
+    CHECK(mg2x_install(&ops, &layout, s_install_buffer) == MG2X_INSTALL_OK);
+    CHECK(memcmp(flash->bytes, expected, INSTALL_IMAGE_BYTES) == 0);
+    free(expected);
+    free(flash);
+  }
+}
+
+static int count_ops_of_successful_install(uint32_t boot_config) {
+  fake_flash *flash = prepared_flash(boot_config);
+  mg2x_flash_ops ops = ops_for(flash);
+  mg2x_install_layout layout = layout_for(boot_config);
+  CHECK(mg2x_install(&ops, &layout, s_install_buffer) == MG2X_INSTALL_OK);
+  int ops_total = flash->ops;
+  free(flash);
+  return ops_total;
+}
+
+/* Any single flash failure leaves the original boot sectors in place. */
+static void test_install_single_failure_is_always_retryable(void) {
+  static const uint32_t configs[] = {0x1000u, 0x7000u};
+  for (size_t c = 0; c < 2u; c++) {
+    int total = count_ops_of_successful_install(configs[c]);
+    for (int k = 1; k <= total; k++) {
+      fake_flash *flash = prepared_flash(configs[c]);
+      flash->fail_op_at = k;
+      mg2x_flash_ops ops = ops_for(flash);
+      mg2x_install_layout layout = layout_for(configs[c]);
+      mg2x_install_result result = mg2x_install(&ops, &layout, s_install_buffer);
+      CHECK(result == MG2X_INSTALL_RETRYABLE);
+      CHECK(boot_sectors_unchanged(flash, configs[c]));
+      free(flash);
+    }
+  }
+}
+
+/* A permanently failing flash is only fatal once the boot sectors were touched. */
+static void test_install_persistent_failure(void) {
+  uint32_t config = 0x7000u;
+  int total = count_ops_of_successful_install(config);
+  int fatal = 0;
+  int retryable = 0;
+  for (int k = 1; k <= total; k++) {
+    fake_flash *flash = prepared_flash(config);
+    flash->fail_op_at = k;
+    flash->fail_persistent = 1;
+    mg2x_flash_ops ops = ops_for(flash);
+    mg2x_install_layout layout = layout_for(config);
+    mg2x_install_result result = mg2x_install(&ops, &layout, s_install_buffer);
+    CHECK(result == MG2X_INSTALL_RETRYABLE || result == MG2X_INSTALL_FATAL);
+    if (result == MG2X_INSTALL_RETRYABLE) {
+      retryable++;
+      CHECK(boot_sectors_unchanged(flash, config));
+    } else {
+      fatal++;
+    }
+    free(flash);
+  }
+  /* Only failures that start while the boot sectors are written are fatal. */
+  CHECK(fatal > 0);
+  CHECK(retryable > fatal);
+}
+
+/* Failing boot sector write plus failing restore of the bootloader is fatal. */
+static void test_install_failed_restore_is_fatal(void) {
+  uint32_t config = 0x1000u;
+  int total = count_ops_of_successful_install(config);
+  fake_flash *flash = prepared_flash(config);
+  /* The last operation writes the new bootloader; the restore then copies the
+   * boot config (read, erase, write) and fails reading the saved bootloader. */
+  flash->fail_op_at = total;
+  flash->fail_op_at_second = total + 4;
+  mg2x_flash_ops ops = ops_for(flash);
+  mg2x_install_layout layout = layout_for(config);
+  CHECK(mg2x_install(&ops, &layout, s_install_buffer) == MG2X_INSTALL_FATAL);
+  free(flash);
+}
+
+static void test_install_rejects_bad_layouts(void) {
+  fake_flash *flash = prepared_flash(0x1000u);
+  mg2x_flash_ops ops = ops_for(flash);
+  const mg2x_install_layout bad[] = {
+      {INSTALL_STAGING + 1u, INSTALL_IMAGE_BYTES, 0x1000u, INSTALL_LIMIT}, /* staging */
+      {INSTALL_STAGING, INSTALL_IMAGE_BYTES, 0x1001u, INSTALL_LIMIT},      /* config */
+      {INSTALL_STAGING, INSTALL_IMAGE_BYTES, 0x1000u, INSTALL_LIMIT + 1u}, /* limit */
+      {INSTALL_STAGING, INSTALL_IMAGE_BYTES, 0u, INSTALL_LIMIT},           /* config < S */
+      {0x7000u, INSTALL_IMAGE_BYTES, 0x7000u, INSTALL_LIMIT},              /* staging <= config */
+      {INSTALL_STAGING, 0x1000u + 2u * S - 1u, 0x1000u, INSTALL_LIMIT},    /* image too small */
+      {INSTALL_STAGING, INSTALL_IMAGE_BYTES, 0x1000u, 20u * S},            /* scratch > limit */
+      {INSTALL_STAGING, INSTALL_IMAGE_BYTES, 0x1000u, INSTALL_STAGING},    /* limit <= staging */
+      {INSTALL_STAGING, 32u * S + 1u, 0x1000u, INSTALL_LIMIT},             /* image > room */
+  };
+  for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+    CHECK(mg2x_install(&ops, &bad[i], s_install_buffer) == MG2X_INSTALL_BAD_LAYOUT);
+  }
+  CHECK(flash->ops == 0);
+  CHECK(mg2x_flash_copy(&ops, 0, S, 0, s_install_buffer));
+  CHECK(flash->ops == 0);
+  free(flash);
+}
+
+static void test_install_result_strings(void) {
+  CHECK(strcmp(mg2x_install_result_str(MG2X_INSTALL_OK), "ok") == 0);
+  CHECK(strcmp(mg2x_install_result_str(MG2X_INSTALL_RETRYABLE), "install_retryable") == 0);
+  CHECK(strcmp(mg2x_install_result_str(MG2X_INSTALL_FATAL), "install_fatal") == 0);
+  CHECK(strcmp(mg2x_install_result_str(MG2X_INSTALL_BAD_LAYOUT), "install_layout") == 0);
+  CHECK(strcmp(mg2x_install_result_str((mg2x_install_result)99), "unknown") == 0);
+}
+
 int main(void) {
   make_image();
   test_sha256_vectors();
@@ -306,6 +490,12 @@ int main(void) {
   test_writer_never_crosses_limit();
   test_writer_reports_flash_errors();
   test_writer_result_strings();
+  test_install_moves_the_image_into_place();
+  test_install_single_failure_is_always_retryable();
+  test_install_persistent_failure();
+  test_install_failed_restore_is_fatal();
+  test_install_rejects_bad_layouts();
+  test_install_result_strings();
   if (s_failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", s_failures);
     return 1;
