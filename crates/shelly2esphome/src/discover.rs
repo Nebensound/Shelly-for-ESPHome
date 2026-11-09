@@ -15,6 +15,7 @@ use serde::Deserialize;
 use crate::{
     device::{MigrationState, MigrationStatus},
     model::Model,
+    protocol::MIGRATION_PROTOCOL,
 };
 
 /// Largest network that is scanned (a /16).
@@ -123,7 +124,8 @@ impl Found {
         match self {
             Self::Stock { model, .. } => model.is_some(),
             Self::Migration(status) => {
-                !matches!(status.state, MigrationState::Downloading | MigrationState::Installing)
+                status.protocol == MIGRATION_PROTOCOL
+                    && matches!(status.state, MigrationState::Idle | MigrationState::Failed)
             }
             Self::Newer { .. } => false,
         }
@@ -160,10 +162,21 @@ impl Found {
             }
             Self::Stock { model: Some(_), auth: false, .. } => "can be flashed".to_owned(),
             Self::Stock { model: None, .. } => "Gen1 model not supported".to_owned(),
-            Self::Migration(status) if self.can_flash() => {
-                format!("waiting ({:?}): run flash to continue", status.state)
-            }
-            Self::Migration(status) => format!("busy ({:?})", status.state),
+            Self::Migration(status) if status.protocol != MIGRATION_PROTOCOL => format!(
+                "speaks protocol {}, this tool {MIGRATION_PROTOCOL}: use the matching version",
+                status.protocol
+            ),
+            Self::Migration(status) => match status.state {
+                MigrationState::Idle | MigrationState::Failed => {
+                    format!("waiting ({:?}): run flash to continue", status.state)
+                }
+                MigrationState::RelocationFailed => {
+                    "moving into slot 1 failed; it retries after a restart".to_owned()
+                }
+                MigrationState::Downloading | MigrationState::Installing => {
+                    format!("busy ({:?})", status.state)
+                }
+            },
             Self::Newer { .. } => "not supported (only Gen1)".to_owned(),
         }
     }

@@ -109,7 +109,8 @@ other VLANs need their network as argument. It only sends reading requests.
 `/settings`, `/settings/actions` and the settings of every relay, light and
 roller) into a new directory `shelly-backup-<type>-<mac>-<UTC time>`. They are
 lost after the migration, so use them to reproduce your setup in ESPHome. The
-files can contain the device's own access point password. `flash` makes the
+files can contain the device's own access point password; on macOS and Linux
+only your user can read them. `flash` makes the
 same backup after the confirmation and before the first change
 (`--backup-dir`, `--no-backup`); if it fails, nothing is changed.
 

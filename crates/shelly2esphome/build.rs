@@ -99,7 +99,15 @@ fn matching_protocol(packages: Vec<(String, PathBuf)>) -> Result<Vec<(String, Pa
 fn build_packages(out: &Path) -> Result<Vec<(String, PathBuf)>> {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("no manifest dir")?);
     let script = manifest.join("../../scripts/build-packages.sh");
-    println!("cargo:rerun-if-changed={}", script.display());
+    // Rebuild the packages whenever the firmware or the model list changes.
+    for input in [
+        script.clone(),
+        manifest.join("../../migration_firmware/mos.yml"),
+        manifest.join("../../migration_firmware/src"),
+        manifest.join("src/model.rs"),
+    ] {
+        println!("cargo:rerun-if-changed={}", input.display());
+    }
     let target = out.join("built");
     let status = Command::new("sh").arg(&script).arg(&target).status()?;
     if !status.success() {

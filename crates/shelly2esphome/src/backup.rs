@@ -120,13 +120,27 @@ impl Backup {
     }
 
     /// Writes every document into `directory`, creating it if needed.
+    ///
+    /// The settings can contain the device's access point password, so the
+    /// directory and files are only accessible to the owner (on Unix).
     fn write_into(&self, directory: &Path) -> Result<(), BackupError> {
         let failed = |error| BackupError::Write(directory.to_path_buf(), error);
-        std::fs::create_dir_all(directory).map_err(failed)?;
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(directory).map_err(failed)?;
         for (name, content) in &self.files {
             // Serializing a `Value` cannot fail.
-            let text = serde_json::to_string_pretty(content).unwrap_or_default();
-            std::fs::write(directory.join(name), text + "\n").map_err(failed)?;
+            let text = serde_json::to_string_pretty(content).unwrap_or_default() + "\n";
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            options
+                .open(directory.join(name))
+                .and_then(|mut file| io::Write::write_all(&mut file, text.as_bytes()))
+                .map_err(failed)?;
         }
         Ok(())
     }

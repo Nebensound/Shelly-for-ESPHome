@@ -83,6 +83,14 @@ fn classifies_and_describes_devices() {
     let busy = migration(MigrationState::Installing);
     assert!(!busy.can_flash());
     assert!(busy.state().starts_with("busy"));
+    let relocating = migration(MigrationState::RelocationFailed);
+    assert!(!relocating.can_flash());
+    assert!(relocating.state().contains("retries after a restart"));
+    let Found::Migration(mut status) = migration(MigrationState::Idle) else { unreachable!() };
+    status.protocol = 1;
+    let older = Found::Migration(status);
+    assert!(!older.can_flash());
+    assert!(older.state().contains("speaks protocol 1"));
 
     let nothing = ShellyWire {
         device_type: None,

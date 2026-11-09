@@ -65,3 +65,26 @@ fn reports_a_file_that_cannot_be_written() {
     assert!(matches!(error, BackupError::Write(ref path, _) if path == &directory));
     std::fs::remove_dir_all(&directory).expect("clean up");
 }
+
+#[cfg(unix)]
+#[test]
+fn only_the_owner_can_read_the_backup() {
+    use std::os::unix::fs::PermissionsExt;
+    let backup = Backup {
+        info: StockInfo {
+            device_type: "SHSW-PM".into(),
+            mac: "AABBCCDDEEFF".into(),
+            auth: false,
+            fw: "1.14.0".into(),
+        },
+        files: vec![("settings.json".into(), serde_json::json!({"wifi_ap": {"key": "x"}}))],
+    };
+    let directory = std::env::temp_dir().join(format!("s2e-private-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    backup.write_into(&directory).expect("write");
+    let mode =
+        |path: &Path| std::fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode(&directory), 0o700);
+    assert_eq!(mode(&directory.join("settings.json")), 0o600);
+    std::fs::remove_dir_all(&directory).expect("clean up");
+}

@@ -190,7 +190,7 @@ jobs:
     # Tag vX.Y.Z (= crate version): publishes the packages that
     # `cargo install` builds download, plus the macOS binary.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [migration-firmware, cli-macos]
+    needs: [migration-firmware-host-tests, migration-firmware, cli, cli-msrv, cli-coverage, cli-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
