@@ -288,6 +288,35 @@ static void test_writer_handles_any_chunk_size(void) {
   free(flash);
 }
 
+static void test_writer_pads_unaligned_tails(void) {
+  /* Final blocks of 1-3 bytes past a word boundary. The previous sector leaves
+   * non-0xFF bytes in the block buffer, so missing padding would write them. */
+  static const uint32_t tails[] = {1, 2, 3, 5, 6, 7};
+  for (size_t t = 0; t < sizeof(tails) / sizeof(tails[0]); t++) {
+    uint32_t tail = tails[t];
+    fake_flash *flash = new_flash();
+    mg2x_writer *writer = malloc(sizeof(*writer));
+    CHECK(writer != NULL);
+    uint32_t base = 2u * MG2X_SECTOR_BYTES;
+    uint32_t total = MG2X_SECTOR_BYTES + tail;
+    CHECK(mg2x_writer_init(writer, ops_for(flash), base, 8u * MG2X_SECTOR_BYTES) ==
+          MG2X_WRITER_OK);
+    CHECK(mg2x_writer_push(writer, s_image, MG2X_SECTOR_BYTES) == MG2X_WRITER_OK);
+    CHECK(mg2x_writer_push(writer, &s_image[5000], tail) == MG2X_WRITER_OK);
+    CHECK(mg2x_writer_flush(writer) == MG2X_WRITER_OK);
+    CHECK(memcmp(&flash->bytes[base], s_image, MG2X_SECTOR_BYTES) == 0);
+    CHECK(memcmp(&flash->bytes[base + MG2X_SECTOR_BYTES], &s_image[5000], tail) == 0);
+    uint32_t padded = (tail + 3u) & ~3u;
+    for (uint32_t i = tail; i < padded; i++) {
+      CHECK(flash->bytes[base + MG2X_SECTOR_BYTES + i] == 0xFF);
+    }
+    CHECK(flash->bytes[base + total + (padded - tail)] == 0xFF);
+    CHECK(mg2x_writer_end_address(writer) == base + 2u * MG2X_SECTOR_BYTES);
+    free(writer);
+    free(flash);
+  }
+}
+
 static void test_writer_never_crosses_limit(void) {
   fake_flash *flash = new_flash();
   mg2x_writer *writer = malloc(sizeof(*writer));
@@ -487,6 +516,7 @@ int main(void) {
   test_job_result_strings();
   test_writer_init_alignment();
   test_writer_handles_any_chunk_size();
+  test_writer_pads_unaligned_tails();
   test_writer_never_crosses_limit();
   test_writer_reports_flash_errors();
   test_writer_result_strings();

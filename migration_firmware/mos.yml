@@ -28,6 +28,7 @@ config_schema:
   - ["wifi.ap.enable", false]
   - ["wifi.sta.enable", true] # join wifi as client
   - ["sta_connect_timeout", 30] # timeout for wifi connection / seconds
+  - ["wifi.sta1.enable", true] # conf_acl blocks stock sta1 settings, so enable it here
   - ["wifi.sta1.ssid", "mgos-recover"] # fallback SSID
   - ["wifi.sta1.pass", "RJoPuKC3u5"] # fallback password
 

@@ -129,7 +129,10 @@ is wrong.
   minute later.
 - **Installing the new boot sectors failed:** the migration firmware writes the
   original boot sectors back and reports `install_retryable`; run `flash` again.
-  Only `install_fatal` (writing and restoring both failed) needs a cable.
+  On `install_fatal` (writing and restoring both failed) the boot sectors are
+  broken, but the migration firmware keeps running and accepts another attempt:
+  do not cut power or restart the device, run `flash` again right away. Only if
+  that fails too, or the device loses power, does it need serial recovery.
 - **Migration firmware cannot join your Wi-Fi:** it falls back to the SSID
   `mgos-recover` with the password `RJoPuKC3u5`. Start a hotspot with these
   credentials and run the tool against the address the device gets there.

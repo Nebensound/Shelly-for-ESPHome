@@ -334,6 +334,30 @@ async fn reports_a_verification_failure_of_the_device() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn warns_against_power_loss_when_restoring_the_boot_sectors_failed() {
+    let mut device = fake(Mode::Migration);
+    device.fail_with = Some("install_fatal");
+    let (host, shared) = start_fake(device).await;
+    let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
+    assert!(matches!(error, FlashError::InstallFatal));
+    let message = error.to_string();
+    assert!(message.contains("NICHT vom Strom trennen"));
+    assert!(message.contains("serielle Schnittstelle"));
+    assert_eq!(shared.lock().unwrap().mode, Mode::Migration);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn warns_on_resume_after_a_fatal_install() {
+    let mut device = fake(Mode::Migration);
+    device.state = MigrationState::Failed;
+    device.error = "install_fatal".to_owned();
+    let (host, shared) = start_fake(device).await;
+    let mut recorder = Recorder::default();
+    run(&host, &shared, None, &mut recorder).await.unwrap();
+    assert!(recorder.summaries[0].contains("Strom nicht trennen"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stops_before_any_change_on_weak_signal() {
     let mut device = fake(Mode::Stock);
     device.rssi = -83;

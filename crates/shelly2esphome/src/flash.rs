@@ -169,6 +169,15 @@ pub enum FlashError {
          neuen Versuch an: Befehl erneut ausführen."
     )]
     DeviceFailed(String),
+    /// Writing the new boot sectors and restoring the original ones both failed.
+    #[error(
+        "das Gerät meldet „install_fatal“: die Bootsektoren konnten weder geschrieben noch \
+         wiederhergestellt werden. Gerät NICHT vom Strom trennen und nicht neu starten – die \
+         Migrationsfirmware läuft weiter und nimmt einen neuen Versuch an: Befehl sofort erneut \
+         ausführen. Schlägt auch das fehl oder verliert das Gerät den Strom, ist eine \
+         Wiederherstellung über die serielle Schnittstelle nötig."
+    )]
+    InstallFatal,
     /// The job did not finish in time.
     #[error("Zeitüberschreitung beim Flashen; Status mit `probe` prüfen und erneut ausführen")]
     FlashTimeout,
@@ -211,6 +220,13 @@ pub fn local_ip_towards(target: IpAddr) -> std::io::Result<IpAddr> {
     Ok(socket.local_addr()?.ip())
 }
 
+/// Error reported by the migration firmware when the boot sectors are left broken.
+pub const INSTALL_FATAL: &str = "install_fatal";
+
+fn device_failure(error: String) -> FlashError {
+    if error == INSTALL_FATAL { FlashError::InstallFatal } else { FlashError::DeviceFailed(error) }
+}
+
 fn stock_summary(model: Model, firmware: &str, rssi_dbm: i32, image: &FirmwareImage) -> String {
     format!(
         "Gerät: {} ({}), Originalfirmware {firmware}, WLAN {rssi_dbm} dBm\n\
@@ -224,10 +240,16 @@ fn stock_summary(model: Model, firmware: &str, rssi_dbm: i32, image: &FirmwareIm
     )
 }
 
-fn resume_summary(image: &FirmwareImage) -> String {
+fn resume_summary(image: &FirmwareImage, last_error: &str) -> String {
+    let warning = if last_error == INSTALL_FATAL {
+        "\nACHTUNG: Der letzte Versuch hat die Bootsektoren beschädigt hinterlassen. Bis zum \
+         erfolgreichen Abschluss Strom nicht trennen und nicht neu starten."
+    } else {
+        ""
+    };
     format!(
         "Das Gerät läuft bereits mit der Migrationsfirmware.\n\
-         Neue Firmware: {} Bytes, SHA-256 {}",
+         Neue Firmware: {} Bytes, SHA-256 {}{warning}",
         image.len(),
         image.sha256_hex()
     )
@@ -289,7 +311,7 @@ async fn monitor_flash(
                 consecutive_misses = 0;
                 match status.state {
                     MigrationState::Failed | MigrationState::RelocationFailed => {
-                        return Err(FlashError::DeviceFailed(status.error));
+                        return Err(device_failure(status.error));
                     }
                     MigrationState::Installing if !installing => {
                         installing = true;
@@ -382,7 +404,7 @@ pub async fn run(
             if status.state == MigrationState::RelocationFailed {
                 return Err(FlashError::RelocationFailed(status.error));
             }
-            if !reporter.confirm(&resume_summary(image)) {
+            if !reporter.confirm(&resume_summary(image, &status.error)) {
                 return Err(FlashError::Aborted);
             }
             (None, Some(status))
