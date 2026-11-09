@@ -4,7 +4,10 @@ use std::io::{Cursor, Read};
 
 use serde::Deserialize;
 
-use crate::model::Model;
+use crate::{device::MIGRATION_PROTOCOL, model::Model};
+
+/// Marker the migration firmware embeds in its application binary.
+const MARKER_PREFIX: &[u8] = b"shelly2esphome-mg2x-protocol=";
 
 /// Reasons why a file is not a usable migration package.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +24,19 @@ pub enum PackageError {
     /// The package was built for another platform.
     #[error("das Migrationspaket ist für die Plattform {0:?} gebaut, nicht für esp8266")]
     WrongPlatform(String),
+    /// The archive is a Shelly ZIP, but not this project's migration firmware
+    /// (e.g. a stock firmware, mg2tasmota or an older auto-downloading build).
+    #[error(
+        "das ZIP ist kein shelly2esphome-Migrationspaket (Original-Firmware, mg2tasmota oder \
+         ältere Version?); bitte das aktuelle mg2esphome-<Modell>.zip aus der CI verwenden"
+    )]
+    NotAMigrationPackage,
+    /// The migration firmware speaks another protocol version than this tool.
+    #[error(
+        "das Migrationspaket spricht Protokoll {0}, dieses Werkzeug Protokoll {MIGRATION_PROTOCOL}; \
+         bitte Paket und Werkzeug aus demselben Stand verwenden"
+    )]
+    ProtocolMismatch(u32),
     /// The package was built for another model and would be refused by the device.
     #[error(
         "das Migrationspaket ist für {found:?} gebaut, das Gerät erwartet {expected:?} \
@@ -38,6 +54,34 @@ pub enum PackageError {
 struct Manifest {
     name: String,
     platform: String,
+}
+
+/// Searches the binaries of the archive for the protocol marker and returns
+/// the protocol number that follows it.
+fn find_protocol_marker(
+    archive: &mut zip::ZipArchive<Cursor<bytes::Bytes>>,
+) -> Result<Option<u32>, PackageError> {
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        if !entry.name().ends_with(".bin") {
+            continue;
+        }
+        let mut content = Vec::new();
+        entry
+            .read_to_end(&mut content)
+            .map_err(|error| PackageError::Manifest(error.to_string()))?;
+        if let Some(position) =
+            content.windows(MARKER_PREFIX.len()).position(|window| window == MARKER_PREFIX)
+        {
+            let digits: String = content[position + MARKER_PREFIX.len()..]
+                .iter()
+                .take_while(|byte| byte.is_ascii_digit())
+                .map(|&byte| char::from(byte))
+                .collect();
+            return Ok(Some(digits.parse().unwrap_or(0)));
+        }
+    }
+    Ok(None)
 }
 
 /// A migration package whose manifest has been inspected.
@@ -72,7 +116,11 @@ impl MigrationPackage {
         if manifest.platform != "esp8266" {
             return Err(PackageError::WrongPlatform(manifest.platform));
         }
-        Ok(Self { bytes, app_name: manifest.name })
+        match find_protocol_marker(&mut archive)? {
+            Some(MIGRATION_PROTOCOL) => Ok(Self { bytes, app_name: manifest.name }),
+            Some(protocol) => Err(PackageError::ProtocolMismatch(protocol)),
+            None => Err(PackageError::NotAMigrationPackage),
+        }
     }
 
     /// Ensures the package is the one built for `model`.
@@ -121,7 +169,11 @@ pub(crate) mod tests {
 
     pub(crate) fn package_for(model: Model) -> Vec<u8> {
         let manifest = format!(r#"{{"name":"{}","platform":"esp8266"}}"#, model.app_name());
-        package_zip(&[("fw/manifest.json", &manifest), ("fw/fw.bin", "x")])
+        package_zip(&[
+            ("fw/manifest.json", &manifest),
+            ("fw/fs.bin", "no marker here"),
+            ("fw/app.bin", "\0\0shelly2esphome-mg2x-protocol=2\0rest"),
+        ])
     }
 
     #[test]
@@ -133,8 +185,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn rejects_stock_and_outdated_packages() {
+        let manifest = r#"{"name":"dimmer-l51","platform":"esp8266"}"#;
+        let stock = package_zip(&[("manifest.json", manifest), ("dimmer-l51.bin", "stock")]);
+        let error = MigrationPackage::parse(stock).expect_err("stock");
+        assert!(matches!(error, PackageError::NotAMigrationPackage));
+        assert!(error.to_string().contains("kein shelly2esphome-Migrationspaket"));
+
+        let old = package_zip(&[
+            ("manifest.json", manifest),
+            ("fw.bin", "shelly2esphome-mg2x-protocol=1"),
+        ]);
+        let error = MigrationPackage::parse(old).expect_err("old");
+        assert!(matches!(error, PackageError::ProtocolMismatch(1)));
+        assert!(error.to_string().contains("Protokoll 1"));
+
+        let garbled = package_zip(&[
+            ("manifest.json", manifest),
+            ("fw.bin", "shelly2esphome-mg2x-protocol="),
+        ]);
+        assert!(matches!(MigrationPackage::parse(garbled), Err(PackageError::ProtocolMismatch(0))));
+    }
+
+    #[test]
     fn root_level_manifest_is_found() {
-        let zip = package_zip(&[("manifest.json", r#"{"name":"switch1pm","platform":"esp8266"}"#)]);
+        let zip = package_zip(&[
+            ("manifest.json", r#"{"name":"switch1pm","platform":"esp8266"}"#),
+            ("fw.bin", "shelly2esphome-mg2x-protocol=2"),
+        ]);
         let package = MigrationPackage::parse(zip).expect("package");
         assert!(package.ensure_model(Model::Shelly1Pm).is_ok());
     }

@@ -5,7 +5,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 /// Protocol version of the `MG2X.*` RPC methods this tool speaks.
-pub const MIGRATION_PROTOCOL: u32 = 1;
+pub const MIGRATION_PROTOCOL: u32 = 2;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Login for devices with enabled web authentication, given as `user:password`.
@@ -100,6 +100,8 @@ pub enum MigrationState {
     Installing,
     /// The last job failed; the device accepts a new one.
     Failed,
+    /// Moving the migration firmware into slot 1 failed; it retries after a restart.
+    RelocationFailed,
 }
 
 /// Answer of `MG2X.Status`.
@@ -286,7 +288,7 @@ mod tests {
     #[test]
     fn migration_status_parses_the_firmware_answer() {
         let status: MigrationStatus = serde_json::from_str(
-            r#"{"protocol":1,"state":"failed","received":5,"size":10,"max_size":20,"error":"hash_mismatch"}"#,
+            r#"{"protocol":2,"state":"failed","received":5,"size":10,"max_size":20,"error":"hash_mismatch"}"#,
         )
         .expect("valid");
         assert_eq!(status.state, MigrationState::Failed);

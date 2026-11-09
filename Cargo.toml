@@ -14,6 +14,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+getrandom = "0.3"
 hex = "0.4"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 serde = { version = "1", features = ["derive"] }

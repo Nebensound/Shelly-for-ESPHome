@@ -96,6 +96,20 @@ impl Model {
         self.row().3
     }
 
+    /// Largest image the migration firmware can stage on this model.
+    ///
+    /// All supported models have 2 MiB flash with two rboot slots of 1 MiB;
+    /// the staging area spans from slot 0 (at 0x8000) to slot 1. The value is
+    /// deliberately conservative (one slot minus the slot offset and six
+    /// sectors); the migration firmware reports its exact limit as well.
+    #[must_use]
+    pub fn max_image_bytes(self) -> usize {
+        const SLOT_BYTES: usize = 0x10_0000;
+        const SLOT_OFFSET: usize = 0x8000;
+        const RESERVED_SECTORS: usize = 6;
+        SLOT_BYTES - SLOT_OFFSET - RESERVED_SECTORS * 4096
+    }
+
     /// File name of the migration package published by CI.
     #[must_use]
     pub fn migration_asset_name(self) -> String {
@@ -121,6 +135,11 @@ mod tests {
         assert_eq!(model.build_name(), "ShellyDimmer2");
         assert_eq!(model.app_name(), "dimmer-l51");
         assert_eq!(model.migration_asset_name(), "mg2esphome-ShellyDimmer2.zip");
+    }
+
+    #[test]
+    fn image_limit_leaves_room_for_scratch_sectors() {
+        assert_eq!(Model::Shelly1Pm.max_image_bytes(), 991_232);
     }
 
     #[test]

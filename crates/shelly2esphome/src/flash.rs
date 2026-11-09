@@ -63,6 +63,8 @@ pub struct FlashOptions {
     pub serve_port: u16,
     /// Port of the ESPHome native API used to detect the new firmware.
     pub esphome_port: u16,
+    /// HTTP port of the migration firmware (fixed to 80 in `mos.yml`).
+    pub migration_port: u16,
     /// Phase time limits.
     pub timeouts: Timeouts,
 }
@@ -75,6 +77,7 @@ impl Default for FlashOptions {
             serve_ip: None,
             serve_port: 0,
             esphome_port: 6053,
+            migration_port: 80,
             timeouts: Timeouts::default(),
         }
     }
@@ -141,6 +144,12 @@ pub enum FlashError {
          ausführen; die IP-Adresse kann sich geändert haben."
     )]
     MigrationNotReachable,
+    /// The migration firmware could not move itself into slot 1 yet.
+    #[error(
+        "die Migrationsfirmware konnte sich noch nicht in Slot 1 verschieben ({0}); sie versucht \
+         es nach einem Neustart automatisch erneut. In einer Minute nochmals ausführen."
+    )]
+    RelocationFailed(String),
     /// The migration firmware is already working on a job.
     #[error("die Migrationsfirmware ist beschäftigt ({0:?}); kurz warten und erneut ausführen")]
     Busy(MigrationState),
@@ -244,15 +253,19 @@ async fn wait_for_migration_firmware(
     timeouts: &Timeouts,
 ) -> Result<MigrationStatus, FlashError> {
     let deadline = Instant::now() + timeouts.migration_boot;
+    let mut relocation_error = None;
     loop {
         // The device restarts twice; unreachable phases are expected here.
         if let Ok(Some(status)) = client.migration_status().await {
-            if matches!(status.state, MigrationState::Idle | MigrationState::Failed) {
-                return Ok(status);
+            match status.state {
+                MigrationState::Idle | MigrationState::Failed => return Ok(status),
+                MigrationState::RelocationFailed => relocation_error = Some(status.error),
+                MigrationState::Downloading | MigrationState::Installing => {}
             }
         }
         if Instant::now() >= deadline {
-            return Err(FlashError::MigrationNotReachable);
+            return Err(relocation_error
+                .map_or(FlashError::MigrationNotReachable, FlashError::RelocationFailed));
         }
         sleep(timeouts.poll_interval).await;
     }
@@ -275,7 +288,9 @@ async fn monitor_flash(
             Ok(Some(status)) => {
                 consecutive_misses = 0;
                 match status.state {
-                    MigrationState::Failed => return Err(FlashError::DeviceFailed(status.error)),
+                    MigrationState::Failed | MigrationState::RelocationFailed => {
+                        return Err(FlashError::DeviceFailed(status.error));
+                    }
                     MigrationState::Installing if !installing => {
                         installing = true;
                         reporter
@@ -349,6 +364,12 @@ pub async fn run(
             let package =
                 package.ok_or_else(|| FlashError::PackageRequired(model.migration_asset_name()))?;
             package.ensure_model(model)?;
+            if image.len() > model.max_image_bytes() {
+                return Err(FlashError::ImageTooLarge {
+                    size: image.len() as u64,
+                    max_size: model.max_image_bytes() as u64,
+                });
+            }
             if !reporter.confirm(&stock_summary(model, &info.fw, rssi_dbm, image)) {
                 return Err(FlashError::Aborted);
             }
@@ -357,6 +378,9 @@ pub async fn run(
         Firmware::Migration(status) => {
             if matches!(status.state, MigrationState::Downloading | MigrationState::Installing) {
                 return Err(FlashError::Busy(status.state));
+            }
+            if status.state == MigrationState::RelocationFailed {
+                return Err(FlashError::RelocationFailed(status.error));
             }
             if !reporter.confirm(&resume_summary(image)) {
                 return Err(FlashError::Aborted);
@@ -370,19 +394,24 @@ pub async fn run(
         SocketAddr::new(serve_ip, options.serve_port),
         package_bytes,
         image.bytes().clone(),
+        Some(device_address.ip()),
     )
     .await?;
 
-    let status = match migration_status {
-        Some(status) => status,
+    let (migration_client, status) = match migration_status {
+        Some(status) => (client.clone(), status),
         None => {
             reporter.info("Migrationsfirmware wird an das Gerät übergeben …");
             client.start_stock_ota(&server.url(PACKAGE_PATH)).await?;
             wait_for_package(&server, &options.timeouts, server.address()).await?;
             reporter.info("Migrationspaket abgeholt, Gerät startet neu …");
-            let status = wait_for_migration_firmware(client, &options.timeouts).await?;
+            // The migration firmware always listens on its own port.
+            let migration_host =
+                SocketAddr::new(device_address.ip(), options.migration_port).to_string();
+            let migration_client = DeviceClient::new(&migration_host, None)?;
+            let status = wait_for_migration_firmware(&migration_client, &options.timeouts).await?;
             reporter.info("Migrationsfirmware läuft");
-            status
+            (migration_client, status)
         }
     };
 
@@ -391,9 +420,14 @@ pub async fn run(
         return Err(FlashError::ImageTooLarge { size: image_len, max_size: status.max_size });
     }
 
-    reporter.info("ESPHome-Firmware wird übertragen und geprüft …");
-    client.start_migration(&server.url(IMAGE_PATH), image.len(), image.sha256_hex()).await?;
-    monitor_flash(client, &server, image_len, &options.timeouts, reporter).await?;
+    reporter.info(
+        "ESPHome-Firmware wird übertragen und geprüft; danach installiert das Gerät sofort. \
+         Ab jetzt bis zur Meldung „Fertig“ den Strom nicht trennen.",
+    );
+    migration_client
+        .start_migration(&server.url(IMAGE_PATH), image.len(), image.sha256_hex())
+        .await?;
+    monitor_flash(&migration_client, &server, image_len, &options.timeouts, reporter).await?;
     reporter.progress(image_len, image_len);
 
     reporter.info("Warte auf ESPHome …");
