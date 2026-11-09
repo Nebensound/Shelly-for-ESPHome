@@ -209,6 +209,12 @@ async fn backs_up_devices() {
 
     let failed = run(&["backup", &closed_port()], &Settings::default()).await;
     assert_eq!(failed.code, ExitCode::FAILURE);
+
+    // The output directory is a file.
+    let blocker = write_temp("not-a-directory", b"x");
+    let unwritable = run(&["backup", &host, "-o", &blocker], &Settings::default()).await;
+    assert_eq!(unwritable.code, ExitCode::FAILURE);
+    assert!(unwritable.err.contains("could not write the backup"));
 }
 
 async fn flash_settings(mode: Mode) -> (String, Shared, Settings) {

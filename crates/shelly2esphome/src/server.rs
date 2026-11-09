@@ -176,7 +176,8 @@ impl FileServer {
             .route(&format!("/{token}{PACKAGE_PATH}"), get(serve_file).with_state(package_file))
             .route(&format!("/{token}{IMAGE_PATH}"), get(serve_file).with_state(image_file));
         let listener = TcpListener::bind(bind).await?;
-        let address = listener.local_addr()?;
+        // A bound listener always knows its address.
+        let address = listener.local_addr().unwrap_or(bind);
         let (shutdown, stopped) = oneshot::channel::<()>();
         tokio::spawn(async move {
             let _ = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
@@ -228,9 +229,8 @@ impl FileServer {
 
 impl Drop for FileServer {
     fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        // `send` only fails if the server task is gone already.
+        let _ = self.shutdown.take().map(|shutdown| shutdown.send(()));
     }
 }
 

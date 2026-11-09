@@ -225,12 +225,13 @@ pub async fn resolve(host: &str) -> std::io::Result<SocketAddr> {
 /// # Errors
 /// Fails if there is no route to `target`.
 pub fn local_ip_towards(target: IpAddr) -> std::io::Result<IpAddr> {
-    let socket = UdpSocket::bind(SocketAddr::new(
-        if target.is_ipv4() { IpAddr::from([0, 0, 0, 0]) } else { IpAddr::from([0_u16; 8]) },
-        0,
-    ))?;
-    socket.connect(SocketAddr::new(target, 80))?;
-    socket.local_addr().map(|address| address.ip())
+    let unspecified =
+        if target.is_ipv4() { IpAddr::from([0, 0, 0, 0]) } else { IpAddr::from([0_u16; 8]) };
+    UdpSocket::bind(SocketAddr::new(unspecified, 0))
+        .and_then(|socket| {
+            socket.connect(SocketAddr::new(target, 80)).and_then(|()| socket.local_addr())
+        })
+        .map(|address| address.ip())
 }
 
 /// Error reported by the migration firmware when the boot sectors are left broken.
