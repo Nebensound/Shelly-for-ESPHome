@@ -61,12 +61,30 @@ jobs:
           - ShellyUni
     steps:
       - uses: actions/checkout@v4
-      - name: Build with mos
-        uses: yaourdt/mongoose-os-action@v2.0.2
-        with:
-          mos-yml-path: migration_firmware
-          platform: esp8266
-          build-args: --build-var MODEL=${{ matrix.model }}
+      # Local build on the runner instead of the Mongoose OS cloud build
+      # service: GitHub may refuse anonymous clones from that shared service
+      # (GitHub changelog 2026-10-19), and here the clones are authenticated.
+      # The "latest" mos channel matches what the cloud service built with
+      # (libraries from master). A new mos build changes the checksum on purpose.
+      - name: Install mos
+        env:
+          MOS_URL: https://mongoose-os.com/downloads/mos-latest/linux/mos
+          MOS_SHA256: 3a308b094ba2b95573e23fa0cf864bb4af15f82213410b9270c21ca720dc0c84
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mos" "$MOS_URL"
+          echo "$MOS_SHA256  $RUNNER_TEMP/mos" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/mos"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Build with mos (local, Docker)
+        working-directory: migration_firmware
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # The token is passed as a file so it never shows up in the command line.
+          umask 077
+          printf 'github.com:%s\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/mos-credentials"
+          mos build --local --platform esp8266 --build-var MODEL=${{ matrix.model }} \
+            --credentials "@$RUNNER_TEMP/mos-credentials"
       - name: Install PyYAML
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Verify package manifest
@@ -91,7 +109,7 @@ jobs:
               sys.exit("manifest does not match the model")
           EOF
       - name: Rename package
-        # The build container leaves fw.zip owned by root; copy instead of move.
+        # The build container may leave fw.zip owned by root; copy instead of move.
         run: cp migration_firmware/build/fw.zip "mg2esphome-${{ matrix.model }}.zip"
       - uses: actions/upload-artifact@v4
         with:

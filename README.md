@@ -200,6 +200,12 @@ Where the CLI build takes the migration packages from is described in
 `SHELLY2ESPHOME_BUILD_PACKAGES=1`, or the release download (switched off with
 `SHELLY2ESPHOME_NO_DOWNLOAD=1`, as in CI).
 
+CI builds the migration firmware locally with `mos build --local` (Docker)
+and clones the Mongoose OS libraries with the workflow's `GITHUB_TOKEN`, since
+GitHub may refuse anonymous clones from busy sources such as the Mongoose OS
+cloud build service. `scripts/build-packages.sh` uses a `GITHUB_TOKEN` from the
+environment the same way.
+
 Releases: push a tag `vX.Y.Z` that matches the crate version. CI then
 publishes `mg2esphome-packages.zip`, the single packages and the macOS binary.
 Bump the crate version whenever the migration protocol changes, so builds
