@@ -12,8 +12,8 @@ These rules apply to every change, by people and by coding agents.
   occur is written without a branch rather than left untested (see Known
   deviations).
 - **Formatter and linter are clean.** `cargo fmt`,
-  `cargo clippy -- -D warnings` and `clang-format` for the firmware, with the same settings locally and in
-  CI.
+  `cargo clippy -- -D warnings` and `clang-format` for the firmware, with the
+  same settings locally and in CI.
 - **100 % coverage of production code.** Rust: regions, lines and functions.
   The host-tested firmware modules: lines, branches and functions. Every
   exclusion needs a specific reason next to it.
