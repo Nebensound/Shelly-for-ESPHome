@@ -132,25 +132,50 @@ jobs:
           version="$(highest "$(raise "$base" "$bump")" "$manifest")"
           echo "release $PREVIOUS, base $base, bump $bump, Cargo.toml $manifest, effective $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      # Runs started by Dependabot get a read-only workflow token and only the
+      # Dependabot secrets, so they push the version commit with a token of the
+      # version GitHub App (secrets VERSION_APP_CLIENT_ID and
+      # VERSION_APP_PRIVATE_KEY, stored as Actions and as Dependabot secrets).
       - name: Decide whether the job may commit the version
         id: mode
         env:
           SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
           DISPATCH_TITLE: ${{ inputs.title }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          HAS_APP: ${{ secrets.VERSION_APP_CLIENT_ID != '' && secrets.VERSION_APP_PRIVATE_KEY != '' }}
         run: |
+          set -euo pipefail
+          branch=""
           if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$SAME_REPO" = true ]; then
-            echo "branch=$GITHUB_HEAD_REF" >> "$GITHUB_OUTPUT"
+            branch="$GITHUB_HEAD_REF"
           elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ -n "$DISPATCH_TITLE" ] && \
                [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            echo "branch=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            branch="$GITHUB_REF_NAME"
           fi
+          if [ -n "$branch" ] && [ "$GITHUB_ACTOR" = "dependabot[bot]" ] && [ "$HAS_APP" != true ]; then
+            echo "::error::Dependabot pull requests need the Dependabot secrets VERSION_APP_CLIENT_ID and VERSION_APP_PRIVATE_KEY to commit the version (see README, Development)."
+            exit 1
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          echo "app=$HAS_APP" >> "$GITHUB_OUTPUT"
+      # No dependency code runs in this job, so the app token never meets code
+      # from a pull request.
+      - name: Create a token for the version commit
+        id: app-token
+        if: steps.mode.outputs.branch != '' && steps.mode.outputs.app == 'true'
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ secrets.VERSION_APP_CLIENT_ID }}
+          private-key: ${{ secrets.VERSION_APP_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
       - name: Commit the version to the pull request branch
         if: steps.mode.outputs.branch != ''
         env:
           VERSION: ${{ steps.effective.outputs.version }}
           BRANCH: ${{ steps.mode.outputs.branch }}
           GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           git fetch --no-tags origin "refs/heads/$BRANCH"
@@ -164,8 +189,16 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -am "chore: set crate version to $VERSION"
-          git push origin "HEAD:refs/heads/$BRANCH"
-          gh workflow run ci.yml --ref "$BRANCH"
+          if [ -n "$APP_TOKEN" ]; then
+            # A push with the app token starts CI on the branch by itself. The
+            # empty extraheader drops the workflow token that checkout
+            # persisted, so the push authenticates as the app.
+            git -c http.https://github.com/.extraheader= push \
+              "https://x-access-token:$APP_TOKEN@github.com/$GITHUB_REPOSITORY.git" "HEAD:refs/heads/$BRANCH"
+          else
+            git push origin "HEAD:refs/heads/$BRANCH"
+            gh workflow run ci.yml --ref "$BRANCH"
+          fi
       # Pushes to main, pull requests from forks and manual runs cannot get a
       # version commit, so a mismatch fails loudly instead.
       - name: Check that Cargo.toml carries the version

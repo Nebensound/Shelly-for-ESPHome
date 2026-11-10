@@ -226,6 +226,18 @@ before another merge can collide with it, and the run on `main` then fails
 instead of releasing. As long as branches are merged up to date, every merge
 gets a new version, so a protocol change always ships with its own packages.
 
+Dependabot opens weekly pull requests for the Cargo dependencies and the GitHub
+Actions (`.github/dependabot.yml`). Merged, they release a patch version like
+any other change. Runs started by Dependabot get a read-only workflow token, so
+CI commits their version with a GitHub App that has only `contents: write` on
+this repository. Its client ID and private key are stored as the secrets
+`VERSION_APP_CLIENT_ID` and `VERSION_APP_PRIVATE_KEY`, both as Actions and as
+Dependabot secrets. The key does not expire; the organization owners rotate it
+in the app settings and update both secrets. Without them, other pull requests
+work as before and Dependabot pull requests fail with a message naming the
+secrets. After the version commit Dependabot no longer rebases the pull request
+by itself; bring it up to date with *Update branch*.
+
 See [AGENTS.md](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/AGENTS.md) for architecture, invariants and conventions.
 
 ## License
