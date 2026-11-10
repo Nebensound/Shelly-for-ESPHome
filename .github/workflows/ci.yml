@@ -3,8 +3,10 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
+  # Dispatched by the version job after it pushed a version commit: pushes made
+  # with the workflow token never trigger workflows, so the checks for the new
+  # head commit are started explicitly.
   workflow_dispatch:
 
 permissions:
@@ -15,11 +17,110 @@ env:
   # the macOS job embeds the packages of this run via SHELLY2ESPHOME_PACKAGES_DIR.
   SHELLY2ESPHOME_NO_DOWNLOAD: "1"
 
+# A newer run for the same branch supersedes a running one; the run dispatched
+# after a version commit cancels the run that pushed it. Every run on main
+# releases, so each main commit gets its own group and is never cancelled.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: >-
+    ci-${{ github.ref == 'refs/heads/main' && github.sha
+    || format('{0}:{1}', github.event.pull_request.head.repo.full_name || github.repository,
+    github.head_ref || github.ref_name) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # The crate version is derived from the Conventional Commits since the last
+  # release tag: `feat` raises the minor, `!`/BREAKING CHANGE the major, anything
+  # else the patch version. On a pull request from this repository the job
+  # commits it to the branch; everywhere else crates/shelly2esphome/Cargo.toml
+  # must already carry it. A version raised by hand is kept if it is higher.
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    outputs:
+      version: ${{ steps.effective.outputs.version }}
+    steps:
+      # On pull requests this is the merge with main, so the latest release tag
+      # is reachable even if the branch is older than it.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Derive the version from the commits
+        id: semantic
+        uses: PaulHatch/semantic-version@79147b94804704a613626766998afe7b2bd0bb47 # v6.0.5
+        with:
+          tag_prefix: "v"
+          major_pattern: "/^\\w+(\\([^)]*\\))?!:|^BREAKING[ -]CHANGE:/"
+          major_regexp_flags: "m"
+          minor_pattern: "/^feat(\\([^)]*\\))?:/"
+          minor_regexp_flags: "m"
+          search_commit_body: true
+          version_format: "${major}.${minor}.${patch}"
+      - name: Resolve the effective version
+        id: effective
+        env:
+          DERIVED: ${{ steps.semantic.outputs.version }}
+          PREVIOUS: ${{ steps.semantic.outputs.previous_version }}
+          # A squash merge takes the pull request title as commit message, so
+          # the title may demand a higher version than the branch commits.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          highest() { printf '%s\n' "$@" | sort -V | tail -n 1; }
+          version="$DERIVED"
+          if [ -n "$TITLE" ]; then
+            IFS=. read -r major minor patch <<< "$PREVIOUS"
+            if [[ $TITLE =~ ^[a-z]+(\([^\)]*\))?!: ]]; then
+              required="$((major + 1)).0.0"
+            elif [[ $TITLE =~ ^feat(\([^\)]*\))?: ]]; then
+              required="$major.$((minor + 1)).0"
+            else
+              required="$major.$minor.$((patch + 1))"
+            fi
+            version="$(highest "$version" "$required")"
+          fi
+          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)"
+          version="$(highest "$version" "$manifest")"
+          echo "previous release $PREVIOUS, derived $DERIVED, Cargo.toml $manifest, effective $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Commit the version to the pull request branch
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          VERSION: ${{ steps.effective.outputs.version }}
+          BRANCH: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "refs/heads/$BRANCH"
+          git switch --detach FETCH_HEAD
+          sed -i "s/^version = \".*\"\$/version = \"$VERSION\"/" crates/shelly2esphome/Cargo.toml
+          sed -i "/^name = \"shelly2esphome\"\$/{n;s/^version = \".*\"\$/version = \"$VERSION\"/;}" Cargo.lock
+          if git diff --quiet; then
+            echo "The branch already carries version $VERSION"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: set crate version to $VERSION"
+          git push origin "HEAD:refs/heads/$BRANCH"
+          gh workflow run ci.yml --ref "$BRANCH"
+      # Pushes to main, pull requests from forks and manual runs cannot get a
+      # version commit, so a mismatch fails loudly instead.
+      - name: Check that Cargo.toml carries the version
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+        env:
+          VERSION: ${{ steps.effective.outputs.version }}
+        run: |
+          set -euo pipefail
+          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)"
+          locked="$(sed -n '/^name = "shelly2esphome"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)"
+          if [ "$manifest" != "$VERSION" ] || [ "$locked" != "$VERSION" ]; then
+            echo "::error::crates/shelly2esphome/Cargo.toml ($manifest) and Cargo.lock ($locked) must carry version $VERSION. Set it on the pull request branch (a pull request from this repository gets it automatically) and bring the branch up to date with main."
+            exit 1
+          fi
+
   migration-firmware-host-tests:
     name: Migration firmware – host tests
     runs-on: ubuntu-latest
@@ -165,50 +266,87 @@ jobs:
           --ignore-filename-regex 'src/unit_tests/'
           --fail-under-regions 100 --fail-under-lines 100 --fail-under-functions 100
 
-  cli-macos:
-    name: CLI – macOS binary
+  crate:
+    name: CLI – crate with embedded packages
     needs: [cli, migration-firmware]
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
-      # The release binary embeds the migration packages of all models, so
-      # `flash` picks the right one itself (crates/shelly2esphome/build.rs).
+      # The published crate carries the migration packages of all models in
+      # packages/ (crates/shelly2esphome/build.rs), so `cargo install
+      # shelly2esphome` embeds them without any download.
       - uses: actions/download-artifact@v4
         with:
           pattern: mg2esphome-*
-          path: packages
+          path: crates/shelly2esphome/packages
           merge-multiple: true
       - name: Check that every model has a package
         run: |
           expected=$(grep -c '^  *(Model::' crates/shelly2esphome/src/model.rs)
-          found=$(ls packages/mg2esphome-*.zip | wc -l | tr -d ' ')
+          found=$(find crates/shelly2esphome/packages -name 'mg2esphome-*.zip' | wc -l)
           echo "packages: $found of $expected"
           test "$found" -eq "$expected"
-      - name: Build universal binary
-        env:
-          SHELLY2ESPHOME_PACKAGES_DIR: ${{ github.workspace }}/packages
+      - name: Check that the crate's firmware license is the firmware's license
+        run: cmp crates/shelly2esphome/LICENSE-migration-firmware migration_firmware/LICENSE
+      # packages/ is ignored by git, but cargo still counts it as uncommitted.
+      # --allow-dirty is safe only while every tracked file matches the commit.
+      - name: Package and verify the crate
         run: |
-          cargo build --release --locked --target aarch64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
-          lipo -create -output shelly2esphome \
-            target/aarch64-apple-darwin/release/shelly2esphome \
-            target/x86_64-apple-darwin/release/shelly2esphome
-          ./shelly2esphome --version
-          # The binary carries the GPL-3.0 migration firmware as data, so both
-          # licenses and the NOTICE go along.
-          cp crates/shelly2esphome/LICENSE crates/shelly2esphome/NOTICE .
-          cp migration_firmware/LICENSE LICENSE-migration-firmware
-          # upload-artifact does not keep the executable bit; a tarball does.
-          tar -czf shelly2esphome-macos-universal.tar.gz \
-            shelly2esphome LICENSE NOTICE LICENSE-migration-firmware
-      - uses: actions/upload-artifact@v4
-        with:
-          name: shelly2esphome-macos-universal
-          path: shelly2esphome-macos-universal.tar.gz
-          if-no-files-found: error
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+          cargo publish --dry-run --locked --allow-dirty -p shelly2esphome
+      - name: Check the crate size (crates.io accepts 10 MiB)
+        run: |
+          crate=$(find target/package -maxdepth 1 -name 'shelly2esphome-*.crate')
+          size=$(stat -c %s "$crate")
+          echo "$crate: $size bytes"
+          test "$size" -le 10485760
+      # Installs from the packaged sources, outside the source tree and with
+      # downloads switched off (SHELLY2ESPHOME_NO_DOWNLOAD), then probes a
+      # simulated stock device of every model.
+      - name: Install the packaged crate and probe every model
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)
+          cargo install --locked --root "$RUNNER_TEMP/install" \
+            --path "target/package/shelly2esphome-$version"
+          cd "$RUNNER_TEMP"
+          python3 - "$GITHUB_WORKSPACE/crates/shelly2esphome/src/model.rs" <<'EOF'
+          import http.server, json, re, subprocess, sys, threading
+
+          types = re.findall(r'^\s*\(Model::\w+, "([^"]+)"', open(sys.argv[1]).read(), re.M)
+          device = {}
+
+          class Stock(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  answers = {
+                      "/shelly": {"type": device["type"], "mac": "AABBCCDDEEFF", "auth": False, "fw": "smoke"},
+                      "/status": {"wifi_sta": {"rssi": -50}},
+                  }
+                  body = json.dumps(answers.get(self.path, {})).encode()
+                  self.send_response(200 if self.path in answers else 404)
+                  self.send_header("Content-Type", "application/json")
+                  self.send_header("Content-Length", str(len(body)))
+                  self.end_headers()
+                  self.wfile.write(body)
+
+              def log_message(self, *args):
+                  pass
+
+          server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stock)
+          threading.Thread(target=server.serve_forever, daemon=True).start()
+          host = f"127.0.0.1:{server.server_port}"
+          failed = []
+          for device_type in types:
+              device["type"] = device_type
+              out = subprocess.run(["install/bin/shelly2esphome", "probe", host],
+                                   capture_output=True, text=True).stdout
+              ok = "the migration package is built into this program" in out
+              print(f"{device_type}: {'embedded' if ok else 'MISSING'}")
+              if not ok:
+                  failed.append(device_type)
+          if not types or failed:
+              sys.exit(f"packages missing for {failed or 'all models'}")
+          EOF
 
   # The one required status check for main: green only if every job above
   # succeeded. A job skipped because a dependency failed would otherwise count
@@ -216,7 +354,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [migration-firmware-host-tests, migration-firmware, cli, cli-msrv, cli-coverage, cli-macos]
+    needs: [version, migration-firmware-host-tests, migration-firmware, cli, cli-msrv, cli-coverage, crate]
     runs-on: ubuntu-latest
     steps:
       - name: All jobs succeeded
@@ -230,34 +368,55 @@ jobs:
 
   release:
     name: Release
-    # Tag vX.Y.Z (= crate version): publishes the packages that
-    # `cargo install` builds download, plus the macOS binary.
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [migration-firmware-host-tests, migration-firmware, cli, cli-msrv, cli-coverage, cli-macos]
+    # Every push to main that passes CI is released as v<crate version>: a
+    # GitHub release with the packages (downloaded by `cargo install --git`
+    # builds) and the crate on crates.io with the packages inside. The version
+    # job has checked that the commit carries that version. Both steps skip
+    # what already exists, so a failed release can simply be re-run.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [version, ci-passed]
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches the crate version
-        run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/shelly2esphome/Cargo.toml | head -1)
-          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
           pattern: mg2esphome-*
-          path: packages
+          path: ${{ runner.temp }}/packages
           merge-multiple: true
-      - uses: actions/download-artifact@v4
-        with:
-          name: shelly2esphome-macos-universal
       - name: Bundle the packages
         run: |
-          cp migration_firmware/LICENSE packages/LICENSE
-          cd packages && zip -q ../mg2esphome-packages.zip mg2esphome-*.zip LICENSE
-      - name: Create the release
+          cp migration_firmware/LICENSE "$RUNNER_TEMP/packages/LICENSE"
+          cd "$RUNNER_TEMP/packages" && zip -q ../mg2esphome-packages.zip mg2esphome-*.zip LICENSE
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
-            mg2esphome-packages.zip packages/mg2esphome-*.zip shelly2esphome-macos-universal.tar.gz
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "release v$VERSION exists already"
+            exit 0
+          fi
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes \
+            "$RUNNER_TEMP/mg2esphome-packages.zip" "$RUNNER_TEMP"/packages/mg2esphome-*.zip
+      # Same packaging as the crate job; see there for --allow-dirty.
+      - name: Publish the crate on crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A 'shelly2esphome-release (https://github.com/Nebensound/Shelly-for-ESPHome)' \
+            "https://crates.io/api/v1/crates/shelly2esphome/$VERSION")
+          if [ "$status" = 200 ]; then
+            echo "shelly2esphome $VERSION is on crates.io already"
+            exit 0
+          fi
+          test -n "$CARGO_REGISTRY_TOKEN" || { echo "::error::the CARGO_REGISTRY_TOKEN secret is not set"; exit 1; }
+          mkdir -p crates/shelly2esphome/packages
+          cp "$RUNNER_TEMP"/packages/mg2esphome-*.zip crates/shelly2esphome/packages/
+          git status --porcelain
+          test -z "$(git status --porcelain)"
+          cargo publish --locked --allow-dirty -p shelly2esphome

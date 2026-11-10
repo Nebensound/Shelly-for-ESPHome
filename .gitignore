@@ -10,3 +10,4 @@ migration_firmware/build/
 *.gcda
 *.gcno
 target/
+crates/shelly2esphome/packages/
