@@ -37,8 +37,9 @@ live here were removed on purpose; do not reintroduce them.
     `tests/common/`. Neither counts as production code for coverage.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
   The CLI is MIT; it carries the firmware packages only as data. The published
-  crate is `MIT AND GPL-3.0-only` and, like the release bundle, ships both
-  licenses plus `crates/shelly2esphome/NOTICE`.
+  crate is `MIT AND GPL-3.0-only` and ships both licenses plus
+  `crates/shelly2esphome/NOTICE`; the release bundle carries the GPL-3.0
+  license of the packages.
   `crates/shelly2esphome/LICENSE-migration-firmware` is a copy of
   `migration_firmware/LICENSE`, because a crate can only contain files below
   its own directory.

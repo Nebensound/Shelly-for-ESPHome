@@ -1,8 +1,8 @@
 //! Migration packages compiled into the binary by `build.rs`.
 //!
-//! CI release builds embed the packages of all models, so `flash` finds the
-//! right one by itself. Builds without `SHELLY2ESPHOME_PACKAGES_DIR` contain
-//! none and need `--migration`.
+//! Release builds embed the packages of all models, so `flash` finds the
+//! right one by itself. `build.rs` lists where they come from; a build
+//! without any packages needs `--migration`.
 
 use std::fmt;
 

@@ -4,17 +4,22 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Dispatched by the version job after it pushed a version commit: pushes made
-  # with the workflow token never trigger workflows, so the checks for the new
-  # head commit are started explicitly.
+  # Dispatched by the version job after it pushed a version commit (pushes made
+  # with the workflow token never trigger workflows), and by pr-title.yml with
+  # the new title when a pull request title changes.
   workflow_dispatch:
+    inputs:
+      title:
+        description: Pull request title to derive the version from
+        type: string
+        required: false
 
 permissions:
   contents: read
 
 env:
   # Tests must not depend on a release download (crates/shelly2esphome/build.rs);
-  # the macOS job embeds the packages of this run via SHELLY2ESPHOME_PACKAGES_DIR.
+  # the crate job embeds the packages of this run through the crate's packages/.
   SHELLY2ESPHOME_NO_DOWNLOAD: "1"
 
 # A newer run for the same branch supersedes a running one; the run dispatched
@@ -30,9 +35,12 @@ concurrency:
 jobs:
   # The crate version is derived from the Conventional Commits since the last
   # release tag: `feat` raises the minor, `!`/BREAKING CHANGE the major, anything
-  # else the patch version. On a pull request from this repository the job
-  # commits it to the branch; everywhere else crates/shelly2esphome/Cargo.toml
-  # must already carry it. A version raised by hand is kept if it is higher.
+  # else the patch version; the pull request title counts too, because a squash
+  # merge uses it as commit message. Off main, a version on main that has no
+  # release yet counts as taken. On a pull request from this repository (or a
+  # dispatch with a title) the job commits the version to the branch; everywhere
+  # else crates/shelly2esphome/Cargo.toml must already carry it. A version
+  # raised by hand is kept if it is higher.
   version:
     name: Version
     runs-on: ubuntu-latest
@@ -61,15 +69,15 @@ jobs:
       - name: Resolve the effective version
         id: effective
         env:
-          DERIVED: ${{ steps.semantic.outputs.version }}
+          VERSION_TYPE: ${{ steps.semantic.outputs.version_type }}
           PREVIOUS: ${{ steps.semantic.outputs.previous_version }}
-          # A squash merge takes the pull request title as commit message, so
-          # the title may demand a higher version than the branch commits.
-          TITLE: ${{ github.event.pull_request.title }}
+          TITLE: ${{ github.event.pull_request.title || inputs.title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           highest() { printf '%s\n' "$@" | sort -V | tail -n 1; }
-          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)"
+          version_of() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1; }
+          manifest="$(version_of < crates/shelly2esphome/Cargo.toml)"
           # Before the first release the whole history would count, including
           # breaking changes from long before any release; the first release
           # takes the version from Cargo.toml instead.
@@ -78,26 +86,44 @@ jobs:
             echo "version=$manifest" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          version="$DERIVED"
-          if [ -n "$TITLE" ]; then
-            IFS=. read -r major minor patch <<< "$PREVIOUS"
-            if [[ $TITLE =~ ^[a-z]+(\([^\)]*\))?!: ]]; then
-              required="$((major + 1)).0.0"
-            elif [[ $TITLE =~ ^feat(\([^\)]*\))?: ]]; then
-              required="$major.$((minor + 1)).0"
-            else
-              required="$major.$minor.$((patch + 1))"
-            fi
-            version="$(highest "$version" "$required")"
+          bump="$VERSION_TYPE"
+          if [[ $TITLE =~ ^[a-z]+(\([^\)]*\))?!: ]]; then
+            bump=major
+          elif [[ $TITLE =~ ^feat(\([^\)]*\))?: ]] && [ "$bump" != major ]; then
+            bump=minor
           fi
+          base="$PREVIOUS"
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            on_main="$(git show "origin/$DEFAULT_BRANCH:crates/shelly2esphome/Cargo.toml" | version_of)"
+            base="$(highest "$base" "$on_main")"
+          fi
+          IFS=. read -r major minor patch <<< "$base"
+          case "$bump" in
+            major) version="$((major + 1)).0.0" ;;
+            minor) version="$major.$((minor + 1)).0" ;;
+            *) version="$major.$minor.$((patch + 1))" ;;
+          esac
           version="$(highest "$version" "$manifest")"
-          echo "previous release $PREVIOUS, derived $DERIVED, Cargo.toml $manifest, effective $version"
+          echo "release $PREVIOUS, base $base, bump $bump, Cargo.toml $manifest, effective $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Decide whether the job may commit the version
+        id: mode
+        env:
+          SAME_REPO: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+          DISPATCH_TITLE: ${{ inputs.title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = pull_request ] && [ "$SAME_REPO" = true ]; then
+            echo "branch=$GITHUB_HEAD_REF" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ -n "$DISPATCH_TITLE" ] && \
+               [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "branch=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          fi
       - name: Commit the version to the pull request branch
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: steps.mode.outputs.branch != ''
         env:
           VERSION: ${{ steps.effective.outputs.version }}
-          BRANCH: ${{ github.head_ref }}
+          BRANCH: ${{ steps.mode.outputs.branch }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -117,7 +143,7 @@ jobs:
       # Pushes to main, pull requests from forks and manual runs cannot get a
       # version commit, so a mismatch fails loudly instead.
       - name: Check that Cargo.toml carries the version
-        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+        if: steps.mode.outputs.branch == ''
         env:
           VERSION: ${{ steps.effective.outputs.version }}
         run: |
@@ -299,13 +325,18 @@ jobs:
         run: cmp crates/shelly2esphome/LICENSE-migration-firmware migration_firmware/LICENSE
       # packages/ is ignored by git, but cargo still counts it as uncommitted.
       # --allow-dirty is safe only while every tracked file matches the commit.
+      # `cargo package` builds the packaged sources (with the packages) and
+      # leaves the .crate and its unpacked sources in target/package/; the dry
+      # run adds the registry checks without building again.
       - name: Package and verify the crate
         run: |
           test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
-          cargo publish --dry-run --locked --allow-dirty -p shelly2esphome
+          cargo publish --dry-run --no-verify --locked --allow-dirty -p shelly2esphome
+          cargo package --locked --allow-dirty -p shelly2esphome
       - name: Check the crate size (crates.io accepts 10 MiB)
         run: |
-          crate=$(find target/package -maxdepth 1 -name 'shelly2esphome-*.crate')
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)
+          crate="target/package/shelly2esphome-$version.crate"
           size=$(stat -c %s "$crate")
           echo "$crate: $size bytes"
           test "$size" -le 10485760
@@ -380,7 +411,8 @@ jobs:
     # GitHub release with the packages (downloaded by `cargo install --git`
     # builds) and the crate on crates.io with the packages inside. The version
     # job has checked that the commit carries that version. Both steps skip
-    # what already exists, so a failed release can simply be re-run.
+    # what already exists for this commit, so a failed release can simply be
+    # re-run; a tag of this version on another commit fails the release.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [version, ci-passed]
     runs-on: ubuntu-latest
@@ -389,7 +421,10 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      # No credentials in the checkout: cargo runs third-party build code.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
@@ -405,12 +440,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "v$VERSION" > /dev/null 2>&1; then
-            echo "release v$VERSION exists already"
+            tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$VERSION" --jq .sha)
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::v$VERSION is released from $tagged, not from $GITHUB_SHA"
+              exit 1
+            fi
+            echo "release v$VERSION exists already for this commit"
             exit 0
           fi
           gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes \
             "$RUNNER_TEMP/mg2esphome-packages.zip" "$RUNNER_TEMP"/packages/mg2esphome-*.zip
-      # Same packaging as the crate job; see there for --allow-dirty.
+      # Same packaging as the crate job (see there for --allow-dirty), which
+      # already built and tested it from this commit and these packages, so
+      # no third-party build code runs while the token is set.
       - name: Publish the crate on crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -427,4 +469,4 @@ jobs:
           cp "$RUNNER_TEMP"/packages/mg2esphome-*.zip crates/shelly2esphome/packages/
           git status --porcelain
           test -z "$(git status --porcelain)"
-          cargo publish --locked --allow-dirty -p shelly2esphome
+          cargo publish --locked --allow-dirty --no-verify -p shelly2esphome

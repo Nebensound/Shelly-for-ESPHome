@@ -219,20 +219,23 @@ themselves; CI names the expected version. A version raised by hand is kept if
 it is higher. The first release takes the version from `Cargo.toml`. Every push to `main` that passes CI is released as
 `v<crate version>`: a GitHub release with `mg2esphome-packages.zip` and the
 single packages, and the crate on crates.io with the packages inside (needs
-the repository secret `CARGO_REGISTRY_TOKEN`). Bring a branch up to date with `main` before merging, so its
-version is above the latest release. Because every merge gets a new version,
-a protocol change always ships with its own packages.
+the repository secret `CARGO_REGISTRY_TOKEN`). A version on `main` that is not
+released yet counts as taken, and a changed pull request title runs CI again.
+Still bring a branch up to date with `main` before merging: a version computed
+before another merge can collide with it, and the run on `main` then fails
+instead of releasing. As long as branches are merged up to date, every merge
+gets a new version, so a protocol change always ships with its own packages.
 
-See [AGENTS.md](AGENTS.md) for architecture, invariants and conventions.
+See [AGENTS.md](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/AGENTS.md) for architecture, invariants and conventions.
 
 ## License
 
 - The CLI (`crates/shelly2esphome/`): MIT, see
-  [crates/shelly2esphome/LICENSE](crates/shelly2esphome/LICENSE).
+  [crates/shelly2esphome/LICENSE](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/crates/shelly2esphome/LICENSE).
 - `migration_firmware/`: GPL-3.0 (inherited from mgos-to-tasmota), see
-  [migration_firmware/LICENSE](migration_firmware/LICENSE).
+  [migration_firmware/LICENSE](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/migration_firmware/LICENSE).
 
 The CLI binary carries the migration firmware packages as data; the firmware
 stays a separate GPL-3.0 program. The published crate is therefore licensed
-`MIT AND GPL-3.0-only`. The crate and the release bundle include both licenses and
-a [NOTICE](crates/shelly2esphome/NOTICE) that points to the firmware's source.
+`MIT AND GPL-3.0-only` and includes both licenses and
+a [NOTICE](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/crates/shelly2esphome/NOTICE) that points to the firmware's source.

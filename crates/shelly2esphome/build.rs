@@ -4,12 +4,13 @@
 //! The packages come from the first source that works:
 //!
 //! 1. `SHELLY2ESPHOME_PACKAGES_DIR=<dir>`: every `mg2esphome-*.zip` in `<dir>`
-//!    (CI release builds, or packages you built with
-//!    `scripts/build-packages.sh`).
+//!    (packages you built with `scripts/build-packages.sh`).
 //! 2. `SHELLY2ESPHOME_BUILD_PACKAGES=1`: runs `scripts/build-packages.sh`
 //!    (needs `mos` and Docker).
 //! 3. `packages/` next to this file: the packages CI puts into the published
-//!    crate, so `cargo install shelly2esphome` embeds them offline.
+//!    crate, so `cargo install shelly2esphome` embeds them offline. It is
+//!    ignored by git and meant only for the packaged crate; in a source
+//!    checkout a non-empty `packages/` wins over the download.
 //! 4. The GitHub release `v<crate version>`: downloads
 //!    `mg2esphome-packages.zip` with `curl` (`cargo install --git …`).
 //!    Skipped with `SHELLY2ESPHOME_NO_DOWNLOAD=1` or offline builds;
@@ -102,10 +103,13 @@ fn matching_protocol(packages: Vec<(String, PathBuf)>) -> Result<Vec<(String, Pa
 fn bundled_packages() -> Result<Option<Vec<(String, PathBuf)>>> {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").ok_or("no manifest dir")?);
     let dir = manifest.join("packages");
-    println!("cargo:rerun-if-changed={}", dir.display());
+    // Cargo treats a missing rerun-if-changed path as changed and would rerun
+    // this script (and the download) on every build; a packages/ created later
+    // needs `cargo clean -p shelly2esphome`.
     if !dir.is_dir() {
         return Ok(None);
     }
+    println!("cargo:rerun-if-changed={}", dir.display());
     let packages = packages_in(&dir)?;
     Ok((!packages.is_empty()).then_some(packages))
 }
