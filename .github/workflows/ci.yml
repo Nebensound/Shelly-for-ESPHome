@@ -99,6 +99,7 @@ jobs:
           fi
           on_main=""
           main_releases=false
+          own_bump="patch"
           if [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
             # A re-run of a release that was already tagged keeps its version.
             if [ "$(git tag --points-at HEAD --list "v$manifest")" = "v$manifest" ]; then
@@ -111,6 +112,15 @@ jobs:
             # Once main releases by itself, the version it carries is taken.
             if git show "origin/$DEFAULT_BRANCH:.github/workflows/ci.yml" | grep -qx '  version:'; then
               main_releases=true
+            fi
+            # The version on main already covers every commit on main, even
+            # one whose release is not tagged yet; only the commits of this
+            # branch may raise it further.
+            messages="$(git log --format=%B "origin/$DEFAULT_BRANCH..HEAD")"
+            if grep -qE '^[A-Za-z0-9_]+(\([^)]*\))?!:|^BREAKING[ -]CHANGE:' <<< "$messages"; then
+              own_bump="major"
+            elif grep -qE '^feat(\([^)]*\))?:' <<< "$messages"; then
+              own_bump="minor"
             fi
           fi
           # Before the first release the whole history would count, including
@@ -127,6 +137,9 @@ jobs:
             exit 0
           fi
           bump="$VERSION_TYPE"
+          if [ "$main_releases" = true ]; then
+            bump="$own_bump"
+          fi
           if [ "$title_bump" = major ] || { [ "$title_bump" = minor ] && [ "$bump" != major ]; }; then
             bump="$title_bump"
           fi
@@ -135,7 +148,7 @@ jobs:
             base="$(highest "$base" "$on_main")"
           fi
           version="$(highest "$(raise "$base" "$bump")" "$manifest")"
-          echo "release $PREVIOUS, base $base, bump $bump, Cargo.toml $manifest, effective $version"
+          echo "release $PREVIOUS, base $base, bump $bump (commits since the release $VERSION_TYPE, own $own_bump, title $title_bump), Cargo.toml $manifest, effective $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Decide whether the job may commit the version
         id: mode
