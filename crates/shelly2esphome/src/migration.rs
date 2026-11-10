@@ -1,5 +1,6 @@
 //! The migration package (`mg2esphome-<Model>.zip`) built by CI with `mos`.
 
+use std::borrow::Cow;
 use std::io::{Cursor, Read};
 
 use serde::Deserialize;
@@ -59,6 +60,15 @@ struct Manifest {
     platform: String,
 }
 
+/// The decoded name of an archive entry.
+///
+/// `zip` decodes a name as UTF-8 and otherwise as CP437, which maps every
+/// byte; its error only covers ASCII-only names that are not UTF-8, and there
+/// are none. The error path cannot occur, so it gets no branch.
+fn entry_name(name: zip::result::ZipResult<Cow<'_, str>>) -> Cow<'_, str> {
+    name.unwrap_or_default()
+}
+
 /// Searches the binaries of the archive for the protocol marker and returns
 /// the protocol number that follows it.
 fn find_protocol_marker(
@@ -66,7 +76,7 @@ fn find_protocol_marker(
 ) -> Result<Option<u32>, PackageError> {
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        if !entry.name().ends_with(".bin") {
+        if !entry_name(entry.name()).ends_with(".bin") {
             continue;
         }
         let mut content = Vec::new();
@@ -99,6 +109,7 @@ impl MigrationPackage {
             .find(|&index| {
                 archive
                     .name_for_index(index)
+                    .map(entry_name)
                     .is_some_and(|name| name == "manifest.json" || name.ends_with("/manifest.json"))
             })
             .ok_or(PackageError::MissingManifest)?;

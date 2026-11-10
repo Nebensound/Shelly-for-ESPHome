@@ -198,11 +198,11 @@ impl DeviceClient {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(DeviceError::AuthRequired);
         }
-        if response.status().is_success() {
-            if let Ok(info) = response.json::<StockInfo>().await {
-                let rssi_dbm = self.stock_rssi().await?;
-                return Ok(Firmware::Stock { info, rssi_dbm });
-            }
+        if response.status().is_success()
+            && let Ok(info) = response.json::<StockInfo>().await
+        {
+            let rssi_dbm = self.stock_rssi().await?;
+            return Ok(Firmware::Stock { info, rssi_dbm });
         }
         match self.migration_status().await? {
             Some(status) => Ok(Firmware::Migration(status)),
