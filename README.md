@@ -91,6 +91,16 @@ Packages that do not speak the tool's protocol are not embedded. A build
 without packages still works; then pass the package with `--migration`.
 `shelly2esphome probe` tells you whether the package is built in.
 
+To update, run the same `cargo install` command again. Cargo reinstalls when a
+newer version (or, for `--git`, a newer commit) exists.
+`shelly2esphome --version` shows the installed version, and the
+[releases](https://github.com/Nebensound/Shelly-for-ESPHome/releases) list
+what changed. Finish a migration that waits in the migration firmware before
+updating: a newer tool may speak another protocol version and then refuses the
+device ("the migration firmware speaks protocol …"). To finish such a
+migration, install the version that started it with
+`cargo install shelly2esphome --version <version>`.
+
 ### 3. Run the tool
 
 ```sh
