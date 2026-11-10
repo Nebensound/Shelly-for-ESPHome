@@ -52,7 +52,7 @@ jobs:
     steps:
       # On pull requests this is the merge with main, so the latest release tag
       # is reachable even if the branch is older than it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Derive the version from the commits
@@ -185,7 +185,7 @@ jobs:
     name: Migration firmware – host tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y clang-format gcovr
       - name: Formatting
@@ -221,7 +221,7 @@ jobs:
           - ShellyI3
           - ShellyUni
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Everything that goes into the firmware is pinned to the Mongoose OS
       # release 2.20.0 by migration_firmware/mos.yml: libraries and modules
       # from their fixed 2.20.0 tags, the prebuilt libraries from the 2.20.0
@@ -274,7 +274,7 @@ jobs:
       - name: Rename package
         # The build container may leave fw.zip owned by root; copy instead of move.
         run: cp migration_firmware/build/fw.zip "mg2esphome-${{ matrix.model }}.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mg2esphome-${{ matrix.model }}
           path: mg2esphome-${{ matrix.model }}.zip
@@ -284,7 +284,7 @@ jobs:
     name: CLI – checks and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -306,7 +306,7 @@ jobs:
     name: CLI – MSRV
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.85
       - run: cargo check --workspace --all-targets --locked
 
@@ -314,7 +314,7 @@ jobs:
     name: CLI – coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
@@ -331,12 +331,12 @@ jobs:
     needs: [cli, migration-firmware]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # The published crate carries the migration packages of all models in
       # packages/ (crates/shelly2esphome/build.rs), so `cargo install
       # shelly2esphome` embeds them without any download.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: mg2esphome-*
           path: crates/shelly2esphome/packages
@@ -448,11 +448,11 @@ jobs:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
       # No credentials in the checkout: cargo runs third-party build code.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: mg2esphome-*
           path: ${{ runner.temp }}/packages
