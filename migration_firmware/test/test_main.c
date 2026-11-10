@@ -361,16 +361,20 @@ static void test_writer_result_strings(void) {
 #define INSTALL_LIMIT (48u * S)
 
 static _Alignas(4) uint8_t s_install_buffer[MG2X_SECTOR_BYTES];
+/* Layout of the image under test; main() runs the installer tests for a
+ * disjoint and an overlapping layout. */
+static uint32_t s_staging = INSTALL_STAGING;
+static uint32_t s_image_bytes = INSTALL_IMAGE_BYTES;
 
 static fake_flash *prepared_flash(uint32_t boot_config) {
   fake_flash *flash = new_flash();
   memset(flash->bytes, 0xFF, sizeof(flash->bytes));
   memset(&flash->bytes[0], 0xB0, S);           /* current bootloader */
   memset(&flash->bytes[boot_config], 0xC0, S); /* current boot config */
-  for (uint32_t i = 0; i < INSTALL_IMAGE_BYTES; i++) {
-    flash->bytes[INSTALL_STAGING + i] = (uint8_t)(i % 251u);
+  for (uint32_t i = 0; i < s_image_bytes; i++) {
+    flash->bytes[s_staging + i] = (uint8_t)(i % 251u);
   }
-  flash->bytes[INSTALL_STAGING] = MG2X_IMAGE_MAGIC;
+  flash->bytes[s_staging] = MG2X_IMAGE_MAGIC;
   return flash;
 }
 
@@ -384,7 +388,7 @@ static int boot_sectors_unchanged(const fake_flash *flash, uint32_t boot_config)
 }
 
 static mg2x_install_layout layout_for(uint32_t boot_config) {
-  mg2x_install_layout layout = {INSTALL_STAGING, INSTALL_IMAGE_BYTES, boot_config, INSTALL_LIMIT};
+  mg2x_install_layout layout = {s_staging, s_image_bytes, boot_config, INSTALL_LIMIT};
   return layout;
 }
 
@@ -392,13 +396,13 @@ static void test_install_moves_the_image_into_place(void) {
   static const uint32_t configs[] = {0x1000u, 0x7000u};
   for (size_t c = 0; c < 2u; c++) {
     fake_flash *flash = prepared_flash(configs[c]);
-    uint8_t *expected = malloc(INSTALL_IMAGE_BYTES);
+    uint8_t *expected = malloc(s_image_bytes);
     CHECK(expected != NULL);
-    memcpy(expected, &flash->bytes[INSTALL_STAGING], INSTALL_IMAGE_BYTES);
+    memcpy(expected, &flash->bytes[s_staging], s_image_bytes);
     mg2x_flash_ops ops = ops_for(flash);
     mg2x_install_layout layout = layout_for(configs[c]);
     CHECK(mg2x_install(&ops, &layout, s_install_buffer) == MG2X_INSTALL_OK);
-    CHECK(memcmp(flash->bytes, expected, INSTALL_IMAGE_BYTES) == 0);
+    CHECK(memcmp(flash->bytes, expected, s_image_bytes) == 0);
     free(expected);
     free(flash);
   }
@@ -497,6 +501,21 @@ static void test_install_rejects_bad_layouts(void) {
   free(flash);
 }
 
+/* A failed retry after a fatal attempt must still be reported as fatal. */
+static void test_install_tracks_damaged_boot_sectors(void) {
+  bool damaged = false;
+  CHECK(mg2x_install_track(MG2X_INSTALL_RETRYABLE, &damaged) == MG2X_INSTALL_RETRYABLE);
+  CHECK(!damaged);
+  CHECK(mg2x_install_track(MG2X_INSTALL_FATAL, &damaged) == MG2X_INSTALL_FATAL);
+  CHECK(damaged);
+  CHECK(mg2x_install_track(MG2X_INSTALL_RETRYABLE, &damaged) == MG2X_INSTALL_FATAL);
+  CHECK(mg2x_install_track(MG2X_INSTALL_BAD_LAYOUT, &damaged) == MG2X_INSTALL_FATAL);
+  CHECK(damaged);
+  CHECK(mg2x_install_track(MG2X_INSTALL_OK, &damaged) == MG2X_INSTALL_OK);
+  CHECK(!damaged);
+  CHECK(mg2x_install_track(MG2X_INSTALL_BAD_LAYOUT, &damaged) == MG2X_INSTALL_BAD_LAYOUT);
+}
+
 static void test_install_result_strings(void) {
   CHECK(strcmp(mg2x_install_result_str(MG2X_INSTALL_OK), "ok") == 0);
   CHECK(strcmp(mg2x_install_result_str(MG2X_INSTALL_RETRYABLE), "install_retryable") == 0);
@@ -519,11 +538,26 @@ int main(void) {
   test_writer_never_crosses_limit();
   test_writer_reports_flash_errors();
   test_writer_result_strings();
-  test_install_moves_the_image_into_place();
-  test_install_single_failure_is_always_retryable();
-  test_install_persistent_failure();
-  test_install_failed_restore_is_fatal();
+  /* Disjoint: the image ends below the staging area. Overlapping: real
+   * images are larger than the staging offset, so moving the image body
+   * overwrites source sectors that were already copied. */
+  static const uint32_t layouts[][2] = {
+      {INSTALL_STAGING, INSTALL_IMAGE_BYTES},
+      {10u * S, 30u * S - 100u},
+  };
+  for (size_t i = 0; i < sizeof(layouts) / sizeof(layouts[0]); i++) {
+    s_staging = layouts[i][0];
+    s_image_bytes = layouts[i][1];
+    CHECK((s_image_bytes > s_staging) == (i == 1u));
+    test_install_moves_the_image_into_place();
+    test_install_single_failure_is_always_retryable();
+    test_install_persistent_failure();
+    test_install_failed_restore_is_fatal();
+  }
+  s_staging = INSTALL_STAGING;
+  s_image_bytes = INSTALL_IMAGE_BYTES;
   test_install_rejects_bad_layouts();
+  test_install_tracks_damaged_boot_sectors();
   test_install_result_strings();
   if (s_failures != 0) {
     fprintf(stderr, "%d check(s) failed\n", s_failures);

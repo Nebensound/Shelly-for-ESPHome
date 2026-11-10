@@ -94,6 +94,17 @@ mg2x_install_result mg2x_install(const mg2x_flash_ops *ops, const mg2x_install_l
   return MG2X_INSTALL_OK;
 }
 
+mg2x_install_result mg2x_install_track(mg2x_install_result result, bool *boot_damaged) {
+  if (result == MG2X_INSTALL_OK) {
+    *boot_damaged = false;
+    return result;
+  }
+  if (result == MG2X_INSTALL_FATAL) {
+    *boot_damaged = true;
+  }
+  return *boot_damaged ? MG2X_INSTALL_FATAL : result;
+}
+
 const char *mg2x_install_result_str(mg2x_install_result result) {
   switch (result) {
   case MG2X_INSTALL_OK:

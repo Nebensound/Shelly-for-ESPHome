@@ -100,41 +100,59 @@ pub fn utc_timestamp(unix_seconds: u64) -> String {
     )
 }
 
+/// `text` as a safe part of a directory name.
+///
+/// The device type and MAC address come from the device, so everything except
+/// ASCII letters, digits, `-` and `_` is replaced; this keeps path separators
+/// and `..` out of the backup directory's name.
+fn safe_component(text: &str) -> String {
+    let safe: String = text
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    if safe.is_empty() { "unknown".to_owned() } else { safe }
+}
+
 impl Backup {
     /// Writes the backup into a new directory below `parent` and returns it.
     ///
-    /// The directory is named `shelly-backup-<type>-<mac>-<UTC time>`.
+    /// The directory is named `shelly-backup-<type>-<mac>-<UTC time>`; if that
+    /// already exists, `-2`, `-3`, … is appended. An existing backup is never
+    /// written into or overwritten.
     ///
     /// # Errors
     /// Fails if the directory or a file cannot be written.
     pub fn write_to(&self, parent: &Path) -> Result<PathBuf, BackupError> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
-        let directory = parent.join(format!(
+        self.write_to_at(parent, now)
+    }
+
+    /// [`Backup::write_to`] with the time given in seconds since the Unix epoch.
+    fn write_to_at(&self, parent: &Path, unix_seconds: u64) -> Result<PathBuf, BackupError> {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| BackupError::Write(parent.to_path_buf(), error))?;
+        let name = format!(
             "shelly-backup-{}-{}-{}",
-            self.info.device_type,
-            self.info.mac,
-            utc_timestamp(now)
-        ));
+            safe_component(&self.info.device_type),
+            safe_component(&self.info.mac),
+            utc_timestamp(unix_seconds)
+        );
+        let directory = create_unique_directory(parent, &name)?;
         self.write_into(&directory)?;
         Ok(directory)
     }
 
-    /// Writes every document into `directory`, creating it if needed.
+    /// Writes every document as a new file into the empty `directory`.
     ///
     /// The settings can contain the device's access point password, so the
-    /// directory and files are only accessible to the owner (on Unix).
+    /// files are only accessible to the owner (on Unix).
     fn write_into(&self, directory: &Path) -> Result<(), BackupError> {
         let failed = |error| BackupError::Write(directory.to_path_buf(), error);
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(directory).map_err(failed)?;
         for (name, content) in &self.files {
             // Serializing a `Value` cannot fail.
             let text = serde_json::to_string_pretty(content).unwrap_or_default() + "\n";
             let mut options = std::fs::OpenOptions::new();
-            options.write(true).create(true).truncate(true);
+            options.write(true).create_new(true);
             #[cfg(unix)]
             std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
             options
@@ -143,6 +161,26 @@ impl Backup {
                 .map_err(failed)?;
         }
         Ok(())
+    }
+}
+
+/// Creates a new directory `parent/name` (or `name-2`, `name-3`, …) that did
+/// not exist before and is only accessible to the owner (on Unix).
+fn create_unique_directory(parent: &Path, name: &str) -> Result<PathBuf, BackupError> {
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let mut attempt = 1_u32;
+    loop {
+        let directory = match attempt {
+            1 => parent.join(name),
+            _ => parent.join(format!("{name}-{attempt}")),
+        };
+        match builder.create(&directory) {
+            Ok(()) => return Ok(directory),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => attempt += 1,
+            Err(error) => return Err(BackupError::Write(directory, error)),
+        }
     }
 }
 

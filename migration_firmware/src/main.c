@@ -67,6 +67,8 @@ static struct mg_connection *s_conn = NULL;
 static uintptr_t s_generation = 0;
 static int s_redirects = 0;
 static int64_t s_last_progress_micros = 0;
+/* Set once an install left the boot sectors unusable; cleared by success. */
+static bool s_boot_damaged = false;
 
 static const char *state_str(mg2x_state state) {
   switch (state) {
@@ -154,7 +156,8 @@ static void install(void) {
   };
   LOG(LL_INFO, ("image verified (%lu bytes), installing", (unsigned long)layout.image_bytes));
   /* writer.block is free again after the final flush. */
-  mg2x_install_result result = mg2x_install(&s_flash_ops, &layout, s_writer.block);
+  mg2x_install_result result =
+      mg2x_install_track(mg2x_install(&s_flash_ops, &layout, s_writer.block), &s_boot_damaged);
   if (result != MG2X_INSTALL_OK) {
     fail(mg2x_install_result_str(result));
     return;

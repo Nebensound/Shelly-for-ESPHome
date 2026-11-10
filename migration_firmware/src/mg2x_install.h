@@ -56,4 +56,13 @@ mg2x_install_result mg2x_install(const mg2x_flash_ops *ops, const mg2x_install_l
 
 const char *mg2x_install_result_str(mg2x_install_result result);
 
+/*
+ * Result to report for an install attempt. `boot_damaged` carries across
+ * attempts whether an earlier attempt left the boot sectors unusable: it is
+ * set by MG2X_INSTALL_FATAL and cleared only by MG2X_INSTALL_OK. While it is
+ * set, every failure is reported as fatal, because a later attempt that fails
+ * early "restores" the already damaged sectors and cannot make them bootable.
+ */
+mg2x_install_result mg2x_install_track(mg2x_install_result result, bool *boot_damaged);
+
 #endif /* MG2X_INSTALL_H */
