@@ -1,0 +1,308 @@
+//! The command line interface (`cli::run`) end to end: arguments in, text out.
+#![allow(missing_docs, clippy::unwrap_used)]
+
+mod common;
+
+use std::{
+    io::{BufReader, Cursor, Read},
+    net::IpAddr,
+    path::Path,
+    process::ExitCode,
+    time::Duration,
+};
+
+use common::*;
+use shelly2esphome::{
+    cli::{self, Settings, Terminal},
+    discover::ScanOptions,
+    embedded::Packages,
+    model::Model,
+};
+
+struct Output {
+    code: ExitCode,
+    out: String,
+    err: String,
+}
+
+async fn run_with_input(
+    args: &[&str],
+    settings: &Settings,
+    input: &mut dyn std::io::BufRead,
+) -> Output {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut terminal = Terminal { out: &mut out, err: &mut err, input };
+    let mut full = vec!["shelly2esphome"];
+    full.extend_from_slice(args);
+    let code = cli::run(full, settings, &mut terminal).await;
+    Output { code, out: String::from_utf8(out).unwrap(), err: String::from_utf8(err).unwrap() }
+}
+
+async fn run(args: &[&str], settings: &Settings) -> Output {
+    run_with_input(args, settings, &mut Cursor::new(Vec::new())).await
+}
+
+fn write_temp(name: &str, bytes: &[u8]) -> String {
+    let directory = scratch_dir();
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join(name);
+    std::fs::write(&path, bytes).unwrap();
+    path.to_str().unwrap().to_owned()
+}
+
+fn firmware_file() -> String {
+    write_temp("firmware.bin", image().bytes())
+}
+
+fn package_file() -> String {
+    write_temp("mg2esphome-ShellyDimmer2.zip", package(Model::ShellyDimmer2).bytes())
+}
+
+#[tokio::test]
+async fn shows_help_version_and_usage_errors() {
+    let settings = Settings::default();
+    let help = run(&["--help"], &settings).await;
+    assert_eq!(help.code, ExitCode::SUCCESS);
+    assert!(help.out.contains("Usage: shelly2esphome"));
+    assert!(help.out.contains("list"));
+    let version = run(&["--version"], &settings).await;
+    assert_eq!(version.code, ExitCode::SUCCESS);
+    assert!(version.out.contains(env!("CARGO_PKG_VERSION")));
+    let wrong = run(&["frobnicate"], &settings).await;
+    assert_eq!(wrong.code, ExitCode::from(2));
+    assert!(wrong.err.contains("unrecognized subcommand"));
+}
+
+#[tokio::test]
+async fn checks_firmware_files() {
+    let settings = Settings::default();
+    let file = firmware_file();
+    let ok = run(&["check", &file], &settings).await;
+    assert_eq!(ok.code, ExitCode::SUCCESS);
+    assert!(ok.out.contains(image().sha256_hex()));
+    assert!(ok.out.contains("Usable for shelly2esphome flash."));
+
+    let missing = run(&["check", "/does/not/exist.bin"], &settings).await;
+    assert_eq!(missing.code, ExitCode::FAILURE);
+    assert!(missing.err.contains("Error: cannot read /does/not/exist.bin"));
+
+    let junk = write_temp("junk.bin", &[0_u8; 100]);
+    let unusable = run(&["check", &junk], &settings).await;
+    assert!(unusable.err.contains("is not usable"));
+    assert!(unusable.err.contains("too small"));
+}
+
+const STOCK_DIMMER: &str = r#"{"type":"SHDM-2","mac":"AABBCCDDEEFF","auth":false,"fw":"1.14.0"}"#;
+const SIGNAL: &str = r#"{"wifi_sta":{"rssi":-64}}"#;
+
+#[tokio::test]
+async fn probes_stock_devices() {
+    let (host, _) = scripted(&[("/shelly", 200, STOCK_DIMMER), ("/status", 200, SIGNAL)]).await;
+    let mut settings = Settings::default();
+    settings.flash.embedded_packages = Packages(&[]);
+    let probe = run(&["probe", &host], &settings).await;
+    assert_eq!(probe.code, ExitCode::SUCCESS);
+    assert!(probe.out.contains("Stock firmware: SHDM-2 (1.14.0), MAC AABBCCDDEEFF"));
+    assert!(probe.out.contains("Wi-Fi signal: -64 dBm"));
+    assert!(probe.out.contains("pass flash --migration mg2esphome-ShellyDimmer2.zip"));
+
+    settings.flash.embedded_packages = Packages(&[("mg2esphome-ShellyDimmer2.zip", b"zip")]);
+    let built_in = run(&["probe", &host], &settings).await;
+    assert!(built_in.out.contains("built into this program"));
+
+    let (host, _) = scripted(&[
+        ("/shelly", 200, r#"{"type":"SHHT-1","mac":"AABBCCDDEEFF","auth":true,"fw":"1.0"}"#),
+        ("/status", 200, SIGNAL),
+    ])
+    .await;
+    let other = run(&["probe", &host, "--auth", "admin:secret"], &settings).await;
+    assert!(other.out.contains("This device type is not supported."));
+    assert!(other.out.contains("Login enabled"));
+
+    let gone = run(&["probe", &closed_port()], &settings).await;
+    assert_eq!(gone.code, ExitCode::FAILURE);
+    assert!(gone.err.contains("Error: device unreachable"));
+}
+
+#[tokio::test]
+async fn probes_the_migration_firmware() {
+    let settings = Settings::default();
+    let (host, _) = scripted(&[(
+        "/rpc/MG2X.Status",
+        200,
+        r#"{"protocol":2,"state":"failed","received":5,"size":9,"max_size":99,"error":"timeout"}"#,
+    )])
+    .await;
+    let failed = run(&["probe", &host], &settings).await;
+    assert!(failed.out.contains("Migration firmware (protocol 2): state Failed, 5 of 9 bytes"));
+    assert!(failed.out.contains("Last error: timeout"));
+
+    let (host, _) = scripted(&[(
+        "/rpc/MG2X.Status",
+        200,
+        r#"{"protocol":2,"state":"idle","received":0,"size":0,"max_size":99,"error":""}"#,
+    )])
+    .await;
+    let idle = run(&["probe", &host], &settings).await;
+    assert!(idle.out.contains("state Idle"));
+    assert!(!idle.out.contains("Last error"));
+}
+
+fn scan_settings(port: u16) -> Settings {
+    Settings {
+        scan: ScanOptions { port, timeout: Duration::from_millis(300), ..ScanOptions::default() },
+        ..Settings::default()
+    }
+}
+
+#[tokio::test]
+async fn lists_shellys() {
+    let (host, _) = scripted(&[("/shelly", 200, STOCK_DIMMER)]).await;
+    let port: u16 = host.rsplit(':').next().unwrap().parse().unwrap();
+    let list = run(&["list", "127.0.0.1/32"], &scan_settings(port)).await;
+    assert_eq!(list.code, ExitCode::SUCCESS);
+    assert!(list.err.contains("Scanning 127.0.0.1/32"));
+    assert!(list.out.starts_with("ADDRESS"));
+    assert!(list.out.contains("127.0.0.1  ShellyDimmer2 (SHDM-2)"));
+    assert!(list.out.contains("1 Shelly(s) found, 1 can be flashed."));
+
+    let closed: u16 = closed_port().rsplit(':').next().unwrap().parse().unwrap();
+    let empty = run(&["detect", "127.0.0.1"], &scan_settings(closed)).await;
+    assert!(empty.out.contains("No Shelly found"));
+
+    let bad = run(&["list", "10.0.0.0/8"], &scan_settings(closed)).await;
+    assert_eq!(bad.code, ExitCode::from(2));
+    assert!(bad.err.contains("too large"));
+}
+
+#[tokio::test]
+async fn lists_the_own_network_by_default() {
+    let closed: u16 = closed_port().rsplit(':').next().unwrap().parse().unwrap();
+    let mut settings = scan_settings(closed);
+    // Pretend this computer is 127.0.0.77: the default is then 127.0.0.0/24.
+    settings.local_ip = |_| Ok(IpAddr::from([127, 0, 0, 77]));
+    let list = run(&["list"], &settings).await;
+    assert!(list.err.contains("Scanning 127.0.0.0/24"), "{}", list.err);
+
+    settings.local_ip = |_| Err(std::io::Error::other("no route"));
+    let failed = run(&["list"], &settings).await;
+    assert_eq!(failed.code, ExitCode::FAILURE);
+    assert!(failed.err.contains("pass one like 10.10.5.0/24"));
+}
+
+const SETTINGS_DIMMER: &str = r#"{"lights":[{}]}"#;
+
+#[tokio::test]
+async fn backs_up_devices() {
+    let (host, _) = scripted(&[
+        ("/shelly", 200, STOCK_DIMMER),
+        ("/settings", 200, SETTINGS_DIMMER),
+        ("/settings/light/0", 200, "{}"),
+    ])
+    .await;
+    let output = scratch_dir();
+    let saved = run(&["backup", &host, "-o", output.to_str().unwrap()], &Settings::default()).await;
+    assert_eq!(saved.code, ExitCode::SUCCESS, "{}", saved.err);
+    assert!(saved.out.starts_with("Saved 3 files of SHDM-2 (AABBCCDDEEFF) to "));
+    assert_eq!(std::fs::read_dir(&output).unwrap().count(), 1);
+    std::fs::remove_dir_all(&output).unwrap();
+
+    let failed = run(&["backup", &closed_port()], &Settings::default()).await;
+    assert_eq!(failed.code, ExitCode::FAILURE);
+
+    // The output directory is a file.
+    let blocker = write_temp("not-a-directory", b"x");
+    let unwritable = run(&["backup", &host, "-o", &blocker], &Settings::default()).await;
+    assert_eq!(unwritable.code, ExitCode::FAILURE);
+    assert!(unwritable.err.contains("could not write the backup"));
+}
+
+async fn flash_settings(mode: Mode) -> (String, Shared, Settings) {
+    let (host, shared) = start_fake(fake(mode)).await;
+    let settings = Settings { flash: options(&shared), ..Settings::default() };
+    (host, shared, settings)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn flashes_with_backup_and_confirmation_flag() {
+    let (host, shared, settings) = flash_settings(Mode::Stock).await;
+    let backups = scratch_dir();
+    let (firmware, package) = (firmware_file(), package_file());
+    let args = [
+        "flash",
+        &host,
+        "-f",
+        &firmware,
+        "-m",
+        &package,
+        "--backup-dir",
+        backups.to_str().unwrap(),
+        "--serve-ip",
+        "127.0.0.1",
+        "--yes",
+    ];
+    let flashed = run(&args, &settings).await;
+    assert_eq!(flashed.code, ExitCode::SUCCESS, "{}", flashed.err);
+    assert!(flashed.err.contains("Device: ShellyDimmer2 (SHDM-2)"));
+    assert!(flashed.err.contains("• Stock settings saved to"));
+    assert!(flashed.err.contains("transferred: 100 %"));
+    assert!(flashed.err.contains("• Done: ESPHome answers on"));
+    assert!(!flashed.err.contains("Continue?"));
+    assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
+    assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
+    std::fs::remove_dir_all(&backups).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn asks_before_flashing() {
+    let (firmware, package) = (firmware_file(), package_file());
+
+    let (host, shared, settings) = flash_settings(Mode::Stock).await;
+    let args = ["flash", &host, "-f", &firmware, "-m", &package, "--no-backup"];
+    let confirmed = run_with_input(&args, &settings, &mut Cursor::new(b"yes\n".to_vec())).await;
+    assert_eq!(confirmed.code, ExitCode::SUCCESS, "{}", confirmed.err);
+    assert!(confirmed.err.contains("Continue? Type \"yes\" to confirm:"));
+    assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
+
+    let (host, shared, settings) = flash_settings(Mode::Stock).await;
+    let args = ["flash", &host, "-f", &firmware, "-m", &package, "--no-backup"];
+    let declined = run_with_input(&args, &settings, &mut Cursor::new(b"no\n".to_vec())).await;
+    assert_eq!(declined.code, ExitCode::FAILURE);
+    assert!(declined.err.contains("Error: aborted, nothing was changed"));
+    assert_eq!(shared.lock().unwrap().ota_requests, 0);
+
+    // A broken terminal counts as "no".
+    struct Broken;
+    impl Read for Broken {
+        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("broken terminal"))
+        }
+    }
+    let (host, _, settings) = flash_settings(Mode::Migration).await;
+    let args = ["flash", &host, "-f", &firmware];
+    let broken = run_with_input(&args, &settings, &mut BufReader::new(Broken)).await;
+    assert!(broken.err.contains("aborted"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reports_unusable_flash_inputs() {
+    let (host, _, settings) = flash_settings(Mode::Stock).await;
+    let firmware = firmware_file();
+    let missing_package =
+        run(&["flash", &host, "-f", &firmware, "-m", "/no/such.zip"], &settings).await;
+    assert!(missing_package.err.contains("cannot read /no/such.zip"));
+
+    let junk = write_temp("junk.zip", b"no zip");
+    let broken_package = run(&["flash", &host, "-f", &firmware, "-m", &junk], &settings).await;
+    assert!(broken_package.err.contains("not a valid ZIP archive"));
+
+    let missing_firmware = run(&["flash", &host, "-f", "/no/firmware.bin"], &settings).await;
+    assert_eq!(missing_firmware.code, ExitCode::FAILURE);
+    assert!(missing_firmware.err.contains("cannot read /no/firmware.bin"));
+
+    // Weak signal: the minimum comes from the command line.
+    let weak =
+        run(&["flash", &host, "-f", &firmware, "--min-rssi", "-50", "--yes"], &settings).await;
+    assert!(weak.err.contains("Wi-Fi signal too weak"));
+    assert!(Path::new(&firmware).exists());
+}

@@ -4,8 +4,9 @@
 .vscode/launch.json
 .vscode/ipch
 .DS_Store
-devices/.esphome/
 secrets.yaml
-devices/secrets.yaml
-output/
-devices/.gitignore
+migration_firmware/test/build/
+migration_firmware/build/
+*.gcda
+*.gcno
+target/

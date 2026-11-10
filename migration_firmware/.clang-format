@@ -1,0 +1,4 @@
+BasedOnStyle: LLVM
+ColumnLimit: 100
+# The ESP8266 SDK headers depend on being included after mgos.h.
+SortIncludes: Never

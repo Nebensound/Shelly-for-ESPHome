@@ -1,0 +1,8 @@
+shelly2esphome is licensed under the MIT License (see LICENSE).
+
+The program carries the migration firmware packages (mg2esphome-<Model>.zip)
+as data and hands them to the devices. The migration firmware is a separate
+program, licensed under the GNU General Public License version 3 (see
+LICENSE-migration-firmware, inherited from mgos-to-tasmota). Its complete
+source code is in the directory migration_firmware/ of
+https://github.com/Nebensound/Shelly-for-ESPHome at the tag of this release.
