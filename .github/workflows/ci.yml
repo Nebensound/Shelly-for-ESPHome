@@ -197,8 +197,13 @@ jobs:
             target/aarch64-apple-darwin/release/shelly2esphome \
             target/x86_64-apple-darwin/release/shelly2esphome
           ./shelly2esphome --version
+          # The binary carries the GPL-3.0 migration firmware as data, so both
+          # licenses and the NOTICE go along.
+          cp crates/shelly2esphome/LICENSE crates/shelly2esphome/NOTICE .
+          cp migration_firmware/LICENSE LICENSE-migration-firmware
           # upload-artifact does not keep the executable bit; a tarball does.
-          tar -czf shelly2esphome-macos-universal.tar.gz shelly2esphome
+          tar -czf shelly2esphome-macos-universal.tar.gz \
+            shelly2esphome LICENSE NOTICE LICENSE-migration-firmware
       - uses: actions/upload-artifact@v4
         with:
           name: shelly2esphome-macos-universal
@@ -229,7 +234,9 @@ jobs:
         with:
           name: shelly2esphome-macos-universal
       - name: Bundle the packages
-        run: cd packages && zip -q ../mg2esphome-packages.zip mg2esphome-*.zip
+        run: |
+          cp migration_firmware/LICENSE packages/LICENSE
+          cd packages && zip -q ../mg2esphome-packages.zip mg2esphome-*.zip LICENSE
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}

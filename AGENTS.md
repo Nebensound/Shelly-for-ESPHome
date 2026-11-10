@@ -35,6 +35,8 @@ live here were removed on purpose; do not reintroduce them.
     `#[path]`), integration tests in `tests/`; the simulated devices are in
     `tests/common/`. Neither counts as production code for coverage.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
+  The CLI is MIT; it carries the firmware packages only as data, and release
+  archives ship both licenses plus `crates/shelly2esphome/NOTICE`.
   - `src/main.c` is the hardware glue: rboot, SPI flash, HTTP, RPC.
   - `src/mg2x_job.c`, `src/mg2x_writer.c`, `src/mg2x_install.c` and
     `src/mg2x_sha256.c` are hardware independent and unit tested on the host

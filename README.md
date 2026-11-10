@@ -218,6 +218,11 @@ See [AGENTS.md](AGENTS.md) for architecture, invariants and conventions.
 
 ## License
 
+- The CLI (`crates/shelly2esphome/`): MIT, see
+  [crates/shelly2esphome/LICENSE](crates/shelly2esphome/LICENSE).
 - `migration_firmware/`: GPL-3.0 (inherited from mgos-to-tasmota), see
   [migration_firmware/LICENSE](migration_firmware/LICENSE).
-- The CLI's license is not decided yet.
+
+The CLI binary carries the migration firmware packages as data; the firmware
+stays a separate GPL-3.0 program. Release archives include both licenses and
+a [NOTICE](crates/shelly2esphome/NOTICE) that points to the firmware's source.
