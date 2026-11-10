@@ -1,0 +1,69 @@
+[submodule "migration_firmware/deps/boards"]
+	path = migration_firmware/deps/boards
+	url = https://github.com/mongoose-os-libs/boards
+	shallow = true
+[submodule "migration_firmware/deps/core"]
+	path = migration_firmware/deps/core
+	url = https://github.com/mongoose-os-libs/core
+	shallow = true
+[submodule "migration_firmware/deps/http-server"]
+	path = migration_firmware/deps/http-server
+	url = https://github.com/mongoose-os-libs/http-server
+	shallow = true
+[submodule "migration_firmware/deps/lwip"]
+	path = migration_firmware/deps/lwip
+	url = https://github.com/mongoose-os-libs/lwip
+	shallow = true
+[submodule "migration_firmware/deps/mbedtls"]
+	path = migration_firmware/deps/mbedtls
+	url = https://github.com/mongoose-os-libs/mbedtls
+	shallow = true
+[submodule "migration_firmware/deps/mongoose"]
+	path = migration_firmware/deps/mongoose
+	url = https://github.com/mongoose-os-libs/mongoose
+	shallow = true
+[submodule "migration_firmware/deps/ota-common"]
+	path = migration_firmware/deps/ota-common
+	url = https://github.com/mongoose-os-libs/ota-common
+	shallow = true
+[submodule "migration_firmware/deps/ota-http-client"]
+	path = migration_firmware/deps/ota-http-client
+	url = https://github.com/mongoose-os-libs/ota-http-client
+	shallow = true
+[submodule "migration_firmware/deps/ota-http-server"]
+	path = migration_firmware/deps/ota-http-server
+	url = https://github.com/mongoose-os-libs/ota-http-server
+	shallow = true
+[submodule "migration_firmware/deps/rpc-common"]
+	path = migration_firmware/deps/rpc-common
+	url = https://github.com/mongoose-os-libs/rpc-common
+	shallow = true
+[submodule "migration_firmware/deps/vfs-common"]
+	path = migration_firmware/deps/vfs-common
+	url = https://github.com/mongoose-os-libs/vfs-common
+	shallow = true
+[submodule "migration_firmware/deps/vfs-dev-part"]
+	path = migration_firmware/deps/vfs-dev-part
+	url = https://github.com/mongoose-os-libs/vfs-dev-part
+	shallow = true
+[submodule "migration_firmware/deps/vfs-fs-lfs"]
+	path = migration_firmware/deps/vfs-fs-lfs
+	url = https://github.com/mongoose-os-libs/vfs-fs-lfs
+	shallow = true
+[submodule "migration_firmware/deps/vfs-fs-spiffs"]
+	path = migration_firmware/deps/vfs-fs-spiffs
+	url = https://github.com/mongoose-os-libs/vfs-fs-spiffs
+	shallow = true
+[submodule "migration_firmware/deps/wifi"]
+	path = migration_firmware/deps/wifi
+	url = https://github.com/mongoose-os-libs/wifi
+	shallow = true
+[submodule "migration_firmware/deps/modules/mongoose-os"]
+	path = migration_firmware/deps/modules/mongoose-os
+	url = https://github.com/cesanta/mongoose-os
+	shallow = true
+[submodule "migration_firmware/deps/modules/mbedtls"]
+	path = migration_firmware/deps/modules/mbedtls
+	url = https://github.com/mongoose-os/mbedtls
+	shallow = true
+	branch = 2.16.11-cesanta3

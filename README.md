@@ -189,22 +189,35 @@ make -C migration_firmware/test check      # ASan/UBSan
 make -C migration_firmware/test coverage   # 100% gate, needs gcovr
 ```
 
-The migration firmware itself is built by CI with
-[`mos`](https://mongoose-os.com/docs/mongoose-os/quickstart/setup.md). To build
-it locally, run
-`mos build --local --platform esp8266 --build-var MODEL=Shelly1PM` in
-`migration_firmware/`.
+The migration firmware is built with
+[`mos`](https://mongoose-os.com/docs/mongoose-os/quickstart/setup.md) and
+Docker, from pinned inputs only:
+
+- every Mongoose OS library and module is a git submodule in
+  `migration_firmware/deps/`, pinned to an exact commit; Dependabot proposes
+  updates as pull requests, whose CI builds all packages (behaviour changes
+  still need a test on real hardware);
+- the four libraries that ship without sources are downloaded from their
+  "latest" releases and checked against `migration_firmware/prebuilt.sha256`;
+- `mos` itself is pinned by its SHA-256 in `ci.yml`.
+
+To build it locally:
+
+```sh
+git submodule update --init --depth 1 migration_firmware/deps
+scripts/fetch-prebuilt.sh migration_firmware/build/prebuilt
+cd migration_firmware
+mos build --local --no-libs-update --binary-libs-dir build/prebuilt \
+  --platform esp8266 --build-var MODEL=Shelly1PM
+```
+
+`--no-libs-update` makes `mos` use the submodules as they are instead of
+fetching anything, so the build never depends on cloning from GitHub.
 
 Where the CLI build takes the migration packages from is described in
 `crates/shelly2esphome/build.rs`: `SHELLY2ESPHOME_PACKAGES_DIR`,
 `SHELLY2ESPHOME_BUILD_PACKAGES=1`, or the release download (switched off with
 `SHELLY2ESPHOME_NO_DOWNLOAD=1`, as in CI).
-
-CI builds the migration firmware locally with `mos build --local` (Docker)
-and clones the Mongoose OS libraries with the workflow's `GITHUB_TOKEN`, since
-GitHub may refuse anonymous clones from busy sources such as the Mongoose OS
-cloud build service. `scripts/build-packages.sh` uses a `GITHUB_TOKEN` from the
-environment the same way.
 
 Releases: push a tag `vX.Y.Z` that matches the crate version. CI then
 publishes `mg2esphome-packages.zip`, the single packages and the macOS binary.

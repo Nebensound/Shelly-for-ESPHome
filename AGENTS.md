@@ -40,6 +40,11 @@ live here were removed on purpose; do not reintroduce them.
     `src/mg2x_sha256.c` are hardware independent and unit tested on the host
     (`test/`, 100 % line/branch/function coverage). The installer tests inject
     a failure at every single flash operation.
+  - `deps/` holds every Mongoose OS library and module as a git submodule
+    pinned to an exact commit (Dependabot updates them);
+    `prebuilt.sha256` pins the four libraries without sources. Builds use
+    `mos build --local --no-libs-update --binary-libs-dir …` and fetch
+    nothing else.
 
 ## Invariants
 
@@ -80,7 +85,8 @@ live here were removed on purpose; do not reintroduce them.
   the transitional local gate. Migration target: switch once the central Rust
   workflow is usable.
 - The migration firmware can only be built with `mos` (Docker). It is built in
-  CI, not in every local environment.
+  CI, not in every local environment. `cargo install --git` also fetches the
+  firmware submodules (about 100 MB), although the CLI does not need them.
 - `main.c` (hardware glue) cannot run on the host. Its behaviour is covered by
   the CLI's end-to-end tests against a simulated device and by tests on real
   hardware.

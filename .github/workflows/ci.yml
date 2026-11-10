@@ -61,11 +61,12 @@ jobs:
           - ShellyUni
     steps:
       - uses: actions/checkout@v4
-      # Local build on the runner instead of the Mongoose OS cloud build
-      # service: GitHub may refuse anonymous clones from that shared service
-      # (GitHub changelog 2026-10-19), and here the clones are authenticated.
-      # The "latest" mos channel matches what the cloud service built with
-      # (libraries from master). A new mos build changes the checksum on purpose.
+        with:
+          # Every Mongoose OS library and module is a submodule pinned to an
+          # exact commit (migration_firmware/deps/, updated by Dependabot).
+          submodules: true
+      # mos itself: the "latest" channel, pinned by SHA-256. A new mos build
+      # changes the checksum on purpose.
       - name: Install mos
         env:
           MOS_URL: https://mongoose-os.com/downloads/mos-latest/linux/mos
@@ -75,25 +76,13 @@ jobs:
           echo "$MOS_SHA256  $RUNNER_TEMP/mos" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/mos"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - name: Build with mos (local, Docker)
+      - name: Fetch prebuilt libraries (pinned by SHA-256)
+        run: scripts/fetch-prebuilt.sh migration_firmware/build/prebuilt
+      - name: Build with mos (local, Docker, nothing fetched)
         working-directory: migration_firmware
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          # The token is passed as a file so it never shows up in the command line.
-          umask 077
-          printf 'github.com:%s\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/mos-credentials"
-          mos build --local --platform esp8266 --build-var MODEL=${{ matrix.model }} \
-            --credentials "@$RUNNER_TEMP/mos-credentials"
-      - name: List fetched dependencies (temporary, for pinning)
-        if: matrix.model == 'Shelly1PM' || matrix.model == 'ShellyDimmer2'
-        working-directory: migration_firmware
-        run: |
-          for d in deps/*/ deps/modules/*/; do
-            [ -e "$d/.git" ] && echo "DEP ${d%/} $(git -C "$d" remote get-url origin) $(git -C "$d" rev-parse HEAD)"
-          done
-          find build -name 'lib*.a' -exec sha256sum {} \; | sed 's/^/BIN /'
-          docker images --digests --format 'IMG {{.Repository}}:{{.Tag}} {{.Digest}}'
+        run: >-
+          mos build --local --no-libs-update --binary-libs-dir build/prebuilt
+          --platform esp8266 --build-var MODEL=${{ matrix.model }}
       - name: Install PyYAML
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Verify package manifest
