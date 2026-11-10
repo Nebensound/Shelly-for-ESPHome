@@ -18,3 +18,28 @@ fn table_aligns_columns() {
     assert_eq!(lines[0], "ADDRESS   DEVICE               FIRMWARE  STATE");
     assert_eq!(lines[1], "10.0.0.1  Shelly1PM (SHSW-PM)  1.14      ok");
 }
+
+#[test]
+fn progress_is_not_repeated_after_a_message() {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut input = std::io::Cursor::new(Vec::new());
+    let mut terminal = Terminal { out: &mut out, err: &mut err, input: &mut input };
+    let mut console = Console {
+        terminal: &mut terminal,
+        assume_yes: true,
+        last_percent: None,
+        progress_open: false,
+    };
+    console.progress(50, 100);
+    console.progress(100, 100);
+    console.info("Firmware verified, installing");
+    // The device reports the same, complete transfer again while installing.
+    console.progress(100, 100);
+    console.info("Waiting for ESPHome");
+    let text = String::from_utf8(err).expect("utf-8");
+    assert_eq!(text.matches("transferred: 100 %").count(), 1, "{text}");
+    assert!(
+        text.contains("bytes)\n• Firmware verified, installing\n• Waiting for ESPHome\n"),
+        "{text}"
+    );
+}
