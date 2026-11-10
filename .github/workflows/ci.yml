@@ -69,6 +69,15 @@ jobs:
         run: |
           set -euo pipefail
           highest() { printf '%s\n' "$@" | sort -V | tail -n 1; }
+          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)"
+          # Before the first release the whole history would count, including
+          # breaking changes from long before any release; the first release
+          # takes the version from Cargo.toml instead.
+          if [ -z "$(git tag --list 'v*')" ]; then
+            echo "no release yet, first release $manifest"
+            echo "version=$manifest" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           version="$DERIVED"
           if [ -n "$TITLE" ]; then
             IFS=. read -r major minor patch <<< "$PREVIOUS"
@@ -81,7 +90,6 @@ jobs:
             fi
             version="$(highest "$version" "$required")"
           fi
-          manifest="$(sed -n 's/^version = "\(.*\)"$/\1/p' crates/shelly2esphome/Cargo.toml | head -n 1)"
           version="$(highest "$version" "$manifest")"
           echo "previous release $PREVIOUS, derived $DERIVED, Cargo.toml $manifest, effective $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"

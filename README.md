@@ -216,7 +216,7 @@ Commits since the last release tag (`feat` raises the minor version, `!` or
 squash merges the pull request title counts too) and commits it to every pull
 request branch of this repository. Pull requests from forks must set it
 themselves; CI names the expected version. A version raised by hand is kept if
-it is higher. Every push to `main` that passes CI is released as
+it is higher. The first release takes the version from `Cargo.toml`. Every push to `main` that passes CI is released as
 `v<crate version>`: a GitHub release with `mg2esphome-packages.zip` and the
 single packages, and the crate on crates.io with the packages inside (needs
 the repository secret `CARGO_REGISTRY_TOKEN`). Bring a branch up to date with `main` before merging, so its
