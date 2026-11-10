@@ -74,12 +74,37 @@ Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
 The tool carries the migration packages (`mg2esphome-<Model>.zip`) of all
 supported models; `flash` detects the model and picks the matching one.
 
-- **Prebuilt binary:** download the archive for your system from
-  [GitHub Releases](https://github.com/Nebensound/Shelly-for-ESPHome/releases).
-  Linux and macOS have separate x86-64 and ARM64 `.tar.gz` archives. Windows
-  x64 uses a `.zip`. Extract the archive and run `./shelly2esphome --version`
-  (Linux/macOS) or `.\shelly2esphome.exe --version` (Windows PowerShell)
-  from the extracted directory. Rust is not required.
+#### Download a prebuilt binary
+
+Choose the archive in the **Assets** section of a
+[GitHub Release](https://github.com/Nebensound/Shelly-for-ESPHome/releases).
+The archives contain the CLI, migration packages and license notices.
+
+| Computer | Archive |
+|---|---|
+| Linux, Intel/AMD 64-bit | `shelly2esphome-linux-x86_64.tar.gz` |
+| Linux, ARM64 | `shelly2esphome-linux-aarch64.tar.gz` |
+| Mac, Apple Silicon (M1 or later) | `shelly2esphome-macos-aarch64.tar.gz` |
+| Mac, Intel | `shelly2esphome-macos-x86_64.tar.gz` |
+| Windows, Intel/AMD 64-bit | `shelly2esphome-windows-x86_64.zip` |
+
+Linux archives target glibc-based distributions such as Ubuntu 22.04 or newer.
+On macOS, **About This Mac** shows whether you have an Apple chip or Intel.
+On Linux, `uname -m` prints `x86_64` or `aarch64`.
+
+Extract the archive into its own folder and open a terminal in that folder.
+On Windows, use **Extract All** and open PowerShell in the extracted folder.
+Keep `firmware.bin` in that folder for the examples below.
+
+**macOS first launch:** these binaries are not Developer-ID signed or
+notarized. macOS may block a browser-downloaded binary. If you trust this
+release, follow Apple's
+[instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445)
+in **System Settings → Privacy & Security** after attempting to run it.
+The CI tests do not exercise Gatekeeper.
+
+#### Install with Cargo
+
 - **From crates.io** (needs a [Rust toolchain](https://rustup.rs)):
   `cargo install shelly2esphome`. The crate carries the packages of its own
   version, so the build needs no further download.
@@ -99,14 +124,39 @@ without packages still works; then pass the package with `--migration`.
 
 ### 3. Run the tool
 
+Run these commands from the extracted folder. Replace the example network
+and device address with your own. You still need a supported Gen1 Shelly and
+the ESPHome firmware built in step 1.
+
+**Linux and macOS**
+
 ```sh
-shelly2esphome list 10.10.5.0/24          # find Shellys and see which can be flashed
-shelly2esphome probe 10.10.5.79           # details of one device
-shelly2esphome backup 10.10.5.79          # save the stock settings (flash does this too)
-shelly2esphome check firmware.bin         # check your firmware without a device
-shelly2esphome version                    # installed version (same as --version)
-shelly2esphome flash 10.10.5.79 --firmware firmware.bin --port 8266
+./shelly2esphome --version
+./shelly2esphome list 10.10.5.0/24
+./shelly2esphome probe 10.10.5.79
+./shelly2esphome backup 10.10.5.79
+./shelly2esphome check firmware.bin
+./shelly2esphome flash 10.10.5.79 --firmware firmware.bin --port 8266
 ```
+
+**Windows PowerShell**
+
+```powershell
+.\shelly2esphome.exe --version
+.\shelly2esphome.exe list 10.10.5.0/24
+.\shelly2esphome.exe probe 10.10.5.79
+.\shelly2esphome.exe backup 10.10.5.79
+.\shelly2esphome.exe check firmware.bin
+.\shelly2esphome.exe flash 10.10.5.79 --firmware firmware.bin --port 8266
+```
+
+After `cargo install`, use `shelly2esphome` instead of the relative executable
+path above, with Cargo's bin directory on your `PATH`.
+The `version` subcommand also prints the installed version.
+
+During `flash`, allow incoming connections from the Shelly to the selected
+port in your computer's firewall. The network requirements below also apply
+to Windows and macOS firewalls.
 
 `list` (alias `detect`) asks every address of the given networks for
 `/shelly`; without an argument it scans the /24 of your computer. Devices in
