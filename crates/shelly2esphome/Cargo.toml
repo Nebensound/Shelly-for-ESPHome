@@ -2,11 +2,24 @@
 name = "shelly2esphome"
 version = "0.1.0"
 description = "Flash a self-built ESPHome firmware onto Shelly Gen1 devices over the air"
-license = "MIT"
+# The CLI is MIT; the embedded migration firmware packages are GPL-3.0 (NOTICE).
+license = "MIT AND GPL-3.0-only"
+readme = "../../README.md"
+keywords = ["shelly", "esphome", "esp8266", "ota", "firmware"]
+categories = ["command-line-utilities", "embedded"]
 edition.workspace = true
 rust-version.workspace = true
-publish.workspace = true
 repository.workspace = true
+# packages/ is filled by CI before packaging (build.rs, source 3); tests stay
+# in the repository.
+include = [
+    "build.rs",
+    "src/**/*.rs",
+    "packages/mg2esphome-*.zip",
+    "LICENSE",
+    "LICENSE-migration-firmware",
+    "NOTICE",
+]
 
 [dependencies]
 anyhow.workspace = true

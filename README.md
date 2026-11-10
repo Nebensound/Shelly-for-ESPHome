@@ -74,10 +74,10 @@ Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
 The tool carries the migration packages (`mg2esphome-<Model>.zip`) of all
 supported models; `flash` detects the model and picks the matching one.
 
-- **macOS binary:** download `shelly2esphome-macos-universal.tar.gz` from a
-  [release](https://github.com/Nebensound/Shelly-for-ESPHome/releases) or
-  from the artifacts of a CI run, and unpack it (`tar -xzf …`).
-- **`cargo install`:**
+- **From crates.io** (needs a [Rust toolchain](https://rustup.rs)):
+  `cargo install shelly2esphome`. The crate carries the packages of its own
+  version, so the build needs no further download.
+- **From the repository:**
   `cargo install --git https://github.com/Nebensound/Shelly-for-ESPHome shelly2esphome`.
   The build downloads the packages of the release that matches the crate
   version (needs `curl`).
@@ -206,23 +206,36 @@ mos build --local --platform esp8266 --build-var MODEL=Shelly1PM
 
 Where the CLI build takes the migration packages from is described in
 `crates/shelly2esphome/build.rs`: `SHELLY2ESPHOME_PACKAGES_DIR`,
-`SHELLY2ESPHOME_BUILD_PACKAGES=1`, or the release download (switched off with
+`SHELLY2ESPHOME_BUILD_PACKAGES=1`, `crates/shelly2esphome/packages/` (filled
+by CI for the published crate), or the release download (switched off with
 `SHELLY2ESPHOME_NO_DOWNLOAD=1`, as in CI).
 
-Releases: push a tag `vX.Y.Z` that matches the crate version. CI then
-publishes `mg2esphome-packages.zip`, the single packages and the macOS binary.
-Bump the crate version whenever the migration protocol changes, so builds
-never download packages of another protocol.
+Releases are automatic. CI derives the crate version from the Conventional
+Commits since the last release tag (`feat` raises the minor version, `!` or
+`BREAKING CHANGE` the major version, everything else the patch version; for
+squash merges the pull request title counts too) and commits it to every pull
+request branch of this repository. Pull requests from forks must set it
+themselves; CI names the expected version. A version raised by hand is kept if
+it is higher. The first release takes the version from `Cargo.toml`. Every push to `main` that passes CI is released as
+`v<crate version>`: a GitHub release with `mg2esphome-packages.zip` and the
+single packages, and the crate on crates.io with the packages inside (needs
+the repository secret `CARGO_REGISTRY_TOKEN`). A version on `main` that is not
+released yet counts as taken, and a changed pull request title runs CI again.
+Still bring a branch up to date with `main` before merging: a version computed
+before another merge can collide with it, and the run on `main` then fails
+instead of releasing. As long as branches are merged up to date, every merge
+gets a new version, so a protocol change always ships with its own packages.
 
-See [AGENTS.md](AGENTS.md) for architecture, invariants and conventions.
+See [AGENTS.md](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/AGENTS.md) for architecture, invariants and conventions.
 
 ## License
 
 - The CLI (`crates/shelly2esphome/`): MIT, see
-  [crates/shelly2esphome/LICENSE](crates/shelly2esphome/LICENSE).
+  [crates/shelly2esphome/LICENSE](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/crates/shelly2esphome/LICENSE).
 - `migration_firmware/`: GPL-3.0 (inherited from mgos-to-tasmota), see
-  [migration_firmware/LICENSE](migration_firmware/LICENSE).
+  [migration_firmware/LICENSE](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/migration_firmware/LICENSE).
 
 The CLI binary carries the migration firmware packages as data; the firmware
-stays a separate GPL-3.0 program. Release archives include both licenses and
-a [NOTICE](crates/shelly2esphome/NOTICE) that points to the firmware's source.
+stays a separate GPL-3.0 program. The published crate is therefore licensed
+`MIT AND GPL-3.0-only` and includes both licenses and
+a [NOTICE](https://github.com/Nebensound/Shelly-for-ESPHome/blob/main/crates/shelly2esphome/NOTICE) that points to the firmware's source.

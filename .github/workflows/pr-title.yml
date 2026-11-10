@@ -1,0 +1,30 @@
+name: PR title
+
+# A squash merge uses the pull request title as commit message, so the title
+# decides the version on main. When it changes, CI runs again with the new
+# title, so the version job can raise the version on the branch before the
+# merge. Pull requests from forks cannot get a version commit; their CI names
+# the expected version on the next push.
+on:
+  pull_request:
+    types: [edited]
+
+permissions:
+  contents: read
+
+jobs:
+  rerun-ci:
+    name: Re-run CI with the new title
+    if: >-
+      github.event.changes.title != null
+      && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch CI on the branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.head_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH" -f title="$TITLE"

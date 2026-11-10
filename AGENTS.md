@@ -41,7 +41,8 @@ live here were removed on purpose; do not reintroduce them.
   - `migration.rs` validates the migration package.
   - `embedded.rs` holds the migration packages that `build.rs` compiles in:
     from `SHELLY2ESPHOME_PACKAGES_DIR`, from `scripts/build-packages.sh`
-    (`SHELLY2ESPHOME_BUILD_PACKAGES=1`) or downloaded from the release
+    (`SHELLY2ESPHOME_BUILD_PACKAGES=1`), from the crate's `packages/` (filled
+    by CI for the crates.io package) or downloaded from the release
     `v<crate version>`. Only packages of the current protocol are embedded.
     An explicit `--migration` always takes precedence; embedded packages pass
     the same validation as files.
@@ -59,8 +60,13 @@ live here were removed on purpose; do not reintroduce them.
     `#[path]`), integration tests in `tests/`; the simulated devices are in
     `tests/common/`. Neither counts as production code for coverage.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
-  The CLI is MIT; it carries the firmware packages only as data, and release
-  archives ship both licenses plus `crates/shelly2esphome/NOTICE`.
+  The CLI is MIT; it carries the firmware packages only as data. The published
+  crate is `MIT AND GPL-3.0-only` and ships both licenses plus
+  `crates/shelly2esphome/NOTICE`; the release bundle carries the GPL-3.0
+  license of the packages.
+  `crates/shelly2esphome/LICENSE-migration-firmware` is a copy of
+  `migration_firmware/LICENSE`, because a crate can only contain files below
+  its own directory.
   - `src/main.c` is the hardware glue: rboot, SPI flash, HTTP, RPC.
   - `src/mg2x_job.c`, `src/mg2x_writer.c`, `src/mg2x_install.c` and
     `src/mg2x_sha256.c` are hardware independent and unit tested on the host
