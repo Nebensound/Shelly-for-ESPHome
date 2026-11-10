@@ -129,17 +129,16 @@ impl Backup {
 
     /// [`Backup::write_to`] with the time given in seconds since the Unix epoch.
     fn write_to_at(&self, parent: &Path, unix_seconds: u64) -> Result<PathBuf, BackupError> {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| BackupError::Write(parent.to_path_buf(), error))?;
         let name = format!(
             "shelly-backup-{}-{}-{}",
             safe_component(&self.info.device_type),
             safe_component(&self.info.mac),
             utc_timestamp(unix_seconds)
         );
-        let directory = create_unique_directory(parent, &name)?;
-        self.write_into(&directory)?;
-        Ok(directory)
+        std::fs::create_dir_all(parent)
+            .map_err(|error| BackupError::Write(parent.to_path_buf(), error))
+            .and_then(|()| create_unique_directory(parent, &name))
+            .and_then(|directory| self.write_into(&directory).map(|()| directory))
     }
 
     /// Writes every document as a new file into the empty `directory`.
