@@ -25,12 +25,17 @@ env:
 # A newer run for the same branch supersedes a running one; the run dispatched
 # after a version commit cancels the run that pushed it. Every run on main
 # releases, so each main commit gets its own group and is never cancelled.
+# A run dispatched for a new title (pr-title.yml) runs on the same commit: if
+# it cancelled the running one, that run's failed "CI passed" would stay on
+# the commit and block the merge, so it waits for it instead.
 concurrency:
   group: >-
     ci-${{ github.ref == 'refs/heads/main' && github.sha
     || format('{0}:{1}', github.event.pull_request.head.repo.full_name || github.repository,
     github.head_ref || github.ref_name) }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: >-
+    ${{ github.ref != 'refs/heads/main'
+    && !(github.event_name == 'workflow_dispatch' && inputs.title != '') }}
 
 jobs:
   # The crate version is derived from the Conventional Commits since the last
@@ -500,10 +505,18 @@ jobs:
         run: |
           # gh release create reuses an existing tag and ignores --target, so a
           # tag of this version must point at this commit, release or not.
-          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/v$VERSION" --jq .sha 2>/dev/null || true)
-          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
-            echo "::error::tag v$VERSION points at $tagged, not at $GITHUB_SHA"
-            exit 1
+          # matching-refs answers an empty list for a missing tag, so every
+          # failed request stops the job instead of reading as "no tag" (on an
+          # HTTP error gh api prints the error body to stdout, ignoring --jq).
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$VERSION" \
+            --jq ".[] | select(.ref == \"refs/tags/v$VERSION\") | .ref")
+          if [ -n "$ref" ]; then
+            # The commits endpoint also resolves annotated tags to their commit.
+            tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/v$VERSION" --jq .sha)
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::tag v$VERSION points at $tagged, not at $GITHUB_SHA"
+              exit 1
+            fi
           fi
           if gh release view "v$VERSION" > /dev/null 2>&1; then
             echo "release v$VERSION exists already for this commit"
