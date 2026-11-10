@@ -13,7 +13,7 @@ use std::{
 };
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use crate::{
     backup,
@@ -101,6 +101,8 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Print the version of this program (same as --version).
+    Version,
 }
 
 /// Defaults for what the command line does not set; tests replace them.
@@ -334,6 +336,10 @@ async fn execute(
             backup_command(&host, auth, &output, terminal).await
         }
         Command::Check { firmware } => check(&firmware, terminal),
+        Command::Version => {
+            let _ = write!(terminal.out, "{}", Cli::command().render_version());
+            Ok(())
+        }
         Command::Flash {
             host,
             firmware,
