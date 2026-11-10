@@ -108,6 +108,7 @@ shelly2esphome list 10.10.5.0/24          # find Shellys and see which can be fl
 shelly2esphome probe 10.10.5.79           # details of one device
 shelly2esphome backup 10.10.5.79          # save the stock settings (flash does this too)
 shelly2esphome check firmware.bin         # check your firmware without a device
+shelly2esphome version                    # installed version (same as --version)
 shelly2esphome flash 10.10.5.79 --firmware firmware.bin --port 8266
 ```
 

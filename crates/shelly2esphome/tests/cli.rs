@@ -68,6 +68,11 @@ async fn shows_help_version_and_usage_errors() {
     let version = run(&["--version"], &settings).await;
     assert_eq!(version.code, ExitCode::SUCCESS);
     assert!(version.out.contains(env!("CARGO_PKG_VERSION")));
+    assert!(help.out.contains("version  Print the version of this program"));
+    let subcommand = run(&["version"], &settings).await;
+    assert_eq!(subcommand.code, ExitCode::SUCCESS);
+    assert_eq!(subcommand.out, version.out);
+    assert!(subcommand.err.is_empty());
     let wrong = run(&["frobnicate"], &settings).await;
     assert_eq!(wrong.code, ExitCode::from(2));
     assert!(wrong.err.contains("unrecognized subcommand"));
