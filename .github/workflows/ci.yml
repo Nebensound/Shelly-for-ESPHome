@@ -77,33 +77,59 @@ jobs:
           set -euo pipefail
           highest() { printf '%s\n' "$@" | sort -V | tail -n 1; }
           version_of() { sed -n 's/^version = "\(.*\)"$/\1/p' | head -n 1; }
+          raise() {
+            IFS=. read -r major minor patch <<< "$1"
+            case "$2" in
+              major) echo "$((major + 1)).0.0" ;;
+              minor) echo "$major.$((minor + 1)).0" ;;
+              *) echo "$major.$minor.$((patch + 1))" ;;
+            esac
+          }
           manifest="$(version_of < crates/shelly2esphome/Cargo.toml)"
+          title_bump="patch"
+          if [[ $TITLE =~ ^[a-z]+(\([^\)]*\))?!: ]]; then
+            title_bump="major"
+          elif [[ $TITLE =~ ^feat(\([^\)]*\))?: ]]; then
+            title_bump="minor"
+          fi
+          on_main=""
+          main_releases=false
+          if [ "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH" ]; then
+            # A re-run of a release that was already tagged keeps its version.
+            if [ "$(git tag --points-at HEAD --list "v$manifest")" = "v$manifest" ]; then
+              echo "v$manifest is tagged on this commit already"
+              echo "version=$manifest" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            on_main="$(git show "origin/$DEFAULT_BRANCH:crates/shelly2esphome/Cargo.toml" | version_of)"
+            # Once main releases by itself, the version it carries is taken.
+            if git show "origin/$DEFAULT_BRANCH:.github/workflows/ci.yml" | grep -qx '  version:'; then
+              main_releases=true
+            fi
+          fi
           # Before the first release the whole history would count, including
           # breaking changes from long before any release; the first release
-          # takes the version from Cargo.toml instead.
+          # takes the version from Cargo.toml, and later changes raise the
+          # version on main by their title.
           if [ -z "$(git tag --list 'v*')" ]; then
-            echo "no release yet, first release $manifest"
-            echo "version=$manifest" >> "$GITHUB_OUTPUT"
+            version="$manifest"
+            if [ "$main_releases" = true ]; then
+              version="$(highest "$(raise "$on_main" "$title_bump")" "$manifest")"
+            fi
+            echo "no release yet, main $on_main, Cargo.toml $manifest, effective $version"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           bump="$VERSION_TYPE"
-          if [[ $TITLE =~ ^[a-z]+(\([^\)]*\))?!: ]]; then
-            bump=major
-          elif [[ $TITLE =~ ^feat(\([^\)]*\))?: ]] && [ "$bump" != major ]; then
-            bump=minor
+          if [ "$title_bump" = major ] || { [ "$title_bump" = minor ] && [ "$bump" != major ]; }; then
+            bump="$title_bump"
           fi
           base="$PREVIOUS"
-          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
-            on_main="$(git show "origin/$DEFAULT_BRANCH:crates/shelly2esphome/Cargo.toml" | version_of)"
+          if [ "$main_releases" = true ]; then
             base="$(highest "$base" "$on_main")"
           fi
-          IFS=. read -r major minor patch <<< "$base"
-          case "$bump" in
-            major) version="$((major + 1)).0.0" ;;
-            minor) version="$major.$((minor + 1)).0" ;;
-            *) version="$major.$minor.$((patch + 1))" ;;
-          esac
-          version="$(highest "$version" "$manifest")"
+          version="$(highest "$(raise "$base" "$bump")" "$manifest")"
           echo "release $PREVIOUS, base $base, bump $bump, Cargo.toml $manifest, effective $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Decide whether the job may commit the version
@@ -439,12 +465,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # gh release create reuses an existing tag and ignores --target, so a
+          # tag of this version must point at this commit, release or not.
+          tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/v$VERSION" --jq .sha 2>/dev/null || true)
+          if [ -n "$tagged" ] && [ "$tagged" != "$GITHUB_SHA" ]; then
+            echo "::error::tag v$VERSION points at $tagged, not at $GITHUB_SHA"
+            exit 1
+          fi
           if gh release view "v$VERSION" > /dev/null 2>&1; then
-            tagged=$(gh api "repos/$GITHUB_REPOSITORY/commits/v$VERSION" --jq .sha)
-            if [ "$tagged" != "$GITHUB_SHA" ]; then
-              echo "::error::v$VERSION is released from $tagged, not from $GITHUB_SHA"
-              exit 1
-            fi
             echo "release v$VERSION exists already for this commit"
             exit 0
           fi
