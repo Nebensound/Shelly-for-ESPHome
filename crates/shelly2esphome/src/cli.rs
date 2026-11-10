@@ -137,12 +137,15 @@ pub struct Terminal<'a> {
 struct Console<'t, 'a> {
     terminal: &'t mut Terminal<'a>,
     assume_yes: bool,
+    /// Last percentage shown; kept across messages so it is not repeated.
     last_percent: Option<u64>,
+    /// A progress line is open (written without a line break).
+    progress_open: bool,
 }
 
 impl Reporter for Console<'_, '_> {
     fn info(&mut self, message: &str) {
-        if self.last_percent.take().is_some() {
+        if std::mem::take(&mut self.progress_open) {
             let _ = writeln!(self.terminal.err);
         }
         let _ = writeln!(self.terminal.err, "• {message}");
@@ -152,6 +155,7 @@ impl Reporter for Console<'_, '_> {
         let percent = sent_bytes.saturating_mul(100).checked_div(total_bytes).unwrap_or(0);
         if self.last_percent != Some(percent) {
             self.last_percent = Some(percent);
+            self.progress_open = true;
             let _ = write!(
                 self.terminal.err,
                 "\r  transferred: {percent:>3} % ({sent_bytes} of {total_bytes} bytes)"
@@ -361,7 +365,8 @@ async fn execute(
                 backup_dir: (!no_backup).then_some(backup_dir),
                 ..settings.flash.clone()
             };
-            let mut console = Console { terminal, assume_yes: yes, last_percent: None };
+            let mut console =
+                Console { terminal, assume_yes: yes, last_percent: None, progress_open: false };
             let outcome =
                 flash::run(&host, &client, &image, package.as_ref(), &options, &mut console)
                     .await?;
