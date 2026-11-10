@@ -271,7 +271,7 @@ pub mod synthetic {
             out.extend_from_slice(data);
             checksum = data.iter().fold(checksum, |acc, byte| acc ^ byte);
         }
-        while (out.len() - start + 1) % 16 != 0 {
+        while !(out.len() - start + 1).is_multiple_of(16) {
             out.push(0);
         }
         out.push(checksum);

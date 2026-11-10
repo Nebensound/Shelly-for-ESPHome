@@ -72,7 +72,7 @@ fn package_protocol(bytes: &[u8]) -> Result<Option<u32>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes))?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        if entry.name().ends_with(".bin") {
+        if entry.name()?.ends_with(".bin") {
             let mut content = Vec::new();
             entry.read_to_end(&mut content)?;
             if let Some(found) = protocol::find_marker(&content) {
@@ -156,8 +156,10 @@ fn download_packages(out: &Path) -> Result<Vec<(String, PathBuf)>> {
     let mut archive = zip::ZipArchive::new(Cursor::new(fs::read(&bundle)?))?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let Some(name) =
-            Path::new(entry.name()).file_name().and_then(|name| name.to_str()).map(str::to_owned)
+        let Some(name) = Path::new(entry.name()?.as_ref())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_owned)
         else {
             continue;
         };
