@@ -1,6 +1,6 @@
 # Pull request titles become Conventional Commits ("chore(deps): …"), so a
 # merged update releases a new patch version. The Version job commits that
-# version to the branch with the version GitHub App (see README, Development).
+# version to the branch like on every other pull request.
 version: 2
 updates:
   - package-ecosystem: cargo
