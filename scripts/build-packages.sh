@@ -12,8 +12,8 @@ command -v mos >/dev/null || { echo "mos not found: https://mongoose-os.com/docs
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 
-# The Mongoose OS libraries are submodules pinned to exact commits; the four
-# libraries without sources come pinned by SHA-256 (prebuilt.sha256).
+# The Mongoose OS libraries are submodules pinned to exact commits; the
+# libraries without sources are fetched as binaries of exactly those commits.
 git -C "$repo" submodule update --init --depth 1 migration_firmware/deps
 sh "$repo/scripts/fetch-prebuilt.sh" "$repo/migration_firmware/build/prebuilt"
 

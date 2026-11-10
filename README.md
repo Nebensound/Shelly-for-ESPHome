@@ -197,9 +197,15 @@ Docker, from pinned inputs only:
   `migration_firmware/deps/`, pinned to an exact commit; Dependabot proposes
   updates as pull requests, whose CI builds all packages (behaviour changes
   still need a test on real hardware);
-- the four libraries that ship without sources are downloaded from their
-  "latest" releases and checked against `migration_firmware/prebuilt.sha256`;
-- `mos` itself is pinned by its SHA-256 in `ci.yml`.
+- the libraries that ship without sources (`mongoose`, `ota-common`,
+  `ota-http-client`, `ota-http-server`) are downloaded as the binaries of
+  exactly the pinned commit: `scripts/fetch-prebuilt.sh` uses the upstream
+  release whose tag points at that commit and stops if there is none, so a
+  Dependabot update automatically brings the matching binaries and no
+  checksum has to be edited by hand. CI caches the binaries per pinned
+  commit, and `main` keeps the last working pins until an update is green;
+- `mos` comes from its "latest" channel and is checked by the version it
+  reports.
 
 To build it locally:
 

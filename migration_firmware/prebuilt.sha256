@@ -1,8 +1,0 @@
-# Prebuilt Mongoose OS libraries the migration firmware links: these four
-# libraries ship without sources and are fetched from their "latest" GitHub
-# releases. scripts/fetch-prebuilt.sh downloads them and checks these SHA-256
-# digests, so the build fails if upstream ever replaces a file.
-5608669503210e8995c278bb34843e9400b631029862a8ea185a7f93cb7a6b77  libmongoose-esp8266-latest.a
-935c0125837da58d83cb04b92d9b6b15a35c899fda42114cf9b5ffd4341db8e8  libota-common-esp8266-latest.a
-ce5c3ef792051c4b16cf04c43bf286d3259d02750a0bea71f7ef1862c5ed6dad  libota-http-client-esp8266-latest.a
-2a919aa29a5908e1a99464d1d9a6894daff2796cb246a87746fbdb90fbe5bdd9  libota-http-server-esp8266-latest.a

@@ -42,7 +42,9 @@ live here were removed on purpose; do not reintroduce them.
     a failure at every single flash operation.
   - `deps/` holds every Mongoose OS library and module as a git submodule
     pinned to an exact commit (Dependabot updates them);
-    `prebuilt.sha256` pins the four libraries without sources. Builds use
+    the libraries without sources are fetched as the release binaries of
+    exactly the pinned commit (`scripts/fetch-prebuilt.sh`, no checksum to
+    maintain). Builds use
     `mos build --local --no-libs-update --binary-libs-dir …` and fetch
     nothing else.
 

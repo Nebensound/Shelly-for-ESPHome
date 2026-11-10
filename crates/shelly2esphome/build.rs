@@ -104,8 +104,9 @@ fn build_packages(out: &Path) -> Result<Vec<(String, PathBuf)>> {
         script.clone(),
         manifest.join("../../migration_firmware/mos.yml"),
         manifest.join("../../migration_firmware/src"),
-        manifest.join("../../migration_firmware/prebuilt.sha256"),
-        manifest.join("../../.gitmodules"),
+        manifest.join("../../scripts/fetch-prebuilt.sh"),
+        // A Dependabot update moves the submodules' commits.
+        manifest.join("../../migration_firmware/deps"),
         manifest.join("src/model.rs"),
     ] {
         println!("cargo:rerun-if-changed={}", input.display());

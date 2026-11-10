@@ -65,19 +65,34 @@ jobs:
           # Every Mongoose OS library and module is a submodule pinned to an
           # exact commit (migration_firmware/deps/, updated by Dependabot).
           submodules: true
-      # mos itself: the "latest" channel, pinned by SHA-256. A new mos build
-      # changes the checksum on purpose.
+      # mos itself comes from the "latest" channel (mos.yml derives
+      # libs_version from it). It is checked by its reported version, not by
+      # a checksum, so a new mos release does not break the build.
       - name: Install mos
         env:
           MOS_URL: https://mongoose-os.com/downloads/mos-latest/linux/mos
-          MOS_SHA256: 3a308b094ba2b95573e23fa0cf864bb4af15f82213410b9270c21ca720dc0c84
         run: |
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/mos" "$MOS_URL"
-          echo "$MOS_SHA256  $RUNNER_TEMP/mos" | sha256sum -c -
           chmod +x "$RUNNER_TEMP/mos"
+          "$RUNNER_TEMP/mos" version | tee "$RUNNER_TEMP/mos-version.txt"
+          grep -q '^Version: latest$' "$RUNNER_TEMP/mos-version.txt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      - name: Fetch prebuilt libraries (pinned by SHA-256)
-        run: scripts/fetch-prebuilt.sh migration_firmware/build/prebuilt
+      # The libraries without sources are chosen by the commits the submodules
+      # pin (scripts/fetch-prebuilt.sh). The cache keeps the binaries of every
+      # pinned commit, so a pinned version still builds after upstream moved
+      # its "latest" release on.
+      - name: Key of the pinned submodules
+        id: pins
+        run: echo "hash=$(git submodule status --recursive migration_firmware/deps | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: migration_firmware/build/prebuilt
+          key: mongoose-prebuilt-${{ steps.pins.outputs.hash }}
+          restore-keys: mongoose-prebuilt-
+      - name: Fetch prebuilt libraries (matched to the pinned commits)
+        run: |
+          scripts/fetch-prebuilt.sh migration_firmware/build/prebuilt
+          cat migration_firmware/build/prebuilt/manifest.txt
       - name: Build with mos (local, Docker, nothing fetched)
         working-directory: migration_firmware
         run: >-
