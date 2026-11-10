@@ -210,6 +210,24 @@ jobs:
           path: shelly2esphome-macos-universal.tar.gz
           if-no-files-found: error
 
+  # The one required status check for main: green only if every job above
+  # succeeded. A job skipped because a dependency failed would otherwise count
+  # as passed if it were the required check itself.
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [migration-firmware-host-tests, migration-firmware, cli, cli-msrv, cli-coverage, cli-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: All jobs succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for result in $RESULTS; do
+            test "$result" = success || { echo "a required job did not succeed"; exit 1; }
+          done
+
   release:
     name: Release
     # Tag vX.Y.Z (= crate version): publishes the packages that
