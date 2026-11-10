@@ -61,46 +61,31 @@ jobs:
           - ShellyUni
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Every Mongoose OS library and module is a submodule pinned to an
-          # exact commit (migration_firmware/deps/, updated by Dependabot).
-          submodules: true
-      # mos itself comes from the "latest" channel (mos.yml derives
-      # libs_version from it). It is checked by the channel and the commit
-      # it reports, not by a checksum, so a new mos release does not break
-      # the build.
+      # mos and everything it fetches are pinned to the Mongoose OS release
+      # 2.20.0 (see libs_version in migration_firmware/mos.yml): libraries and
+      # modules from their fixed 2.20.0 tags, the prebuilt libraries from the
+      # 2.20.0 release assets. Clones authenticate with the workflow token,
+      # because GitHub may refuse anonymous clones (changelog 2026-10-19).
       - name: Install mos
         env:
-          MOS_URL: https://mongoose-os.com/downloads/mos-latest/linux/mos
+          MOS_VERSION: 2.20.0
         run: |
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mos" "$MOS_URL"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/mos" \
+            "https://mongoose-os.com/downloads/mos-$MOS_VERSION/linux/mos"
           chmod +x "$RUNNER_TEMP/mos"
           "$RUNNER_TEMP/mos" version | tee "$RUNNER_TEMP/mos-version.txt"
-          # e.g. "Build ID: 20240925-111020/2.20.0-20-gb44964e-master"
-          grep -q '^Update channel: latest$' "$RUNNER_TEMP/mos-version.txt"
-          grep -Eq '^Build ID: .*-g[0-9a-f]{7,}-master$' "$RUNNER_TEMP/mos-version.txt"
+          grep -q "$MOS_VERSION" "$RUNNER_TEMP/mos-version.txt"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      # The libraries without sources are chosen by the commits the submodules
-      # pin (scripts/fetch-prebuilt.sh). The cache keeps the binaries of every
-      # pinned commit, so a pinned version still builds after upstream moved
-      # its "latest" release on.
-      - name: Key of the pinned submodules
-        id: pins
-        run: echo "hash=$(git submodule status --recursive migration_firmware/deps | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
-        with:
-          path: migration_firmware/build/prebuilt
-          key: mongoose-prebuilt-${{ steps.pins.outputs.hash }}
-          restore-keys: mongoose-prebuilt-
-      - name: Fetch prebuilt libraries (matched to the pinned commits)
-        run: |
-          scripts/fetch-prebuilt.sh migration_firmware/build/prebuilt
-          cat migration_firmware/build/prebuilt/manifest.txt
-      - name: Build with mos (local, Docker, nothing fetched)
+      - name: Build with mos (local, Docker)
         working-directory: migration_firmware
-        run: >-
-          mos build --local --no-libs-update --binary-libs-dir build/prebuilt
-          --platform esp8266 --build-var MODEL=${{ matrix.model }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # The token is passed as a file so it never shows up in the command line.
+          umask 077
+          printf 'github.com:%s\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/mos-credentials"
+          mos build --local --platform esp8266 --build-var MODEL=${{ matrix.model }} \
+            --credentials "@$RUNNER_TEMP/mos-credentials"
       - name: Install PyYAML
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Verify package manifest

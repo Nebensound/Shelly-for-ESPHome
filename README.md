@@ -191,34 +191,18 @@ make -C migration_firmware/test coverage   # 100% gate, needs gcovr
 
 The migration firmware is built with
 [`mos`](https://mongoose-os.com/docs/mongoose-os/quickstart/setup.md) and
-Docker, from pinned inputs only:
+Docker. Every library, module and the toolchain come from the fixed Mongoose
+OS release 2.20.0 (`libs_version` in `migration_firmware/mos.yml`), so a build
+does not change when upstream does. CI uses `mos` 2.20.0 as well.
 
-- every Mongoose OS library and module is a git submodule in
-  `migration_firmware/deps/`, pinned to an exact commit; Dependabot proposes
-  updates as pull requests, whose CI builds all packages (behaviour changes
-  still need a test on real hardware);
-- the libraries that ship without sources (`mongoose`, `ota-common`,
-  `ota-http-client`, `ota-http-server`) are downloaded as the binaries of
-  exactly the pinned commit: `scripts/fetch-prebuilt.sh` uses the upstream
-  release whose tag points at that commit and stops if there is none, so a
-  Dependabot update automatically brings the matching binaries and no
-  checksum has to be edited by hand. CI caches the binaries per pinned
-  commit, and `main` keeps the last working pins until an update is green;
-- `mos` comes from its "latest" channel and is checked by the version it
-  reports.
-
-To build it locally:
+To build it locally (`GITHUB_TOKEN` is optional; GitHub may refuse anonymous
+clones under load):
 
 ```sh
-git submodule update --init --depth 1 migration_firmware/deps
-scripts/fetch-prebuilt.sh migration_firmware/build/prebuilt
 cd migration_firmware
-mos build --local --no-libs-update --binary-libs-dir build/prebuilt \
-  --platform esp8266 --build-var MODEL=Shelly1PM
+mos build --local --platform esp8266 --build-var MODEL=Shelly1PM
+# or all models: GITHUB_TOKEN=$(gh auth token) scripts/build-packages.sh packages
 ```
-
-`--no-libs-update` makes `mos` use the submodules as they are instead of
-fetching anything, so the build never depends on cloning from GitHub.
 
 Where the CLI build takes the migration packages from is described in
 `crates/shelly2esphome/build.rs`: `SHELLY2ESPHOME_PACKAGES_DIR`,

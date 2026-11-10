@@ -3,9 +3,12 @@ description: intermediate firmware that installs a user-built ESPHome image from
 platform: esp8266
 version: 0.5.0
 
-libs_version: ${mos.version}
-modules_version: ${mos.version}
-mongoose_os_version: ${mos.version}
+# Every library, module and the toolchain image come from the Mongoose OS
+# release 2.20.0 (fixed tags, prebuilt libraries from fixed release assets).
+# Change these three together, and MOS_VERSION in .github/workflows/ci.yml.
+libs_version: "2.20.0"
+modules_version: "2.20.0"
+mongoose_os_version: "2.20.0"
 manifest_version: 2020-01-29
 sources: [src]
 filesystem: [fs]
