@@ -74,6 +74,12 @@ Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
 The tool carries the migration packages (`mg2esphome-<Model>.zip`) of all
 supported models; `flash` detects the model and picks the matching one.
 
+- **Prebuilt binary:** download the archive for your system from
+  [GitHub Releases](https://github.com/Nebensound/Shelly-for-ESPHome/releases).
+  Linux and macOS have separate x86-64 and ARM64 `.tar.gz` archives. Windows
+  x64 uses a `.zip`. Extract the archive and run `./shelly2esphome --version`
+  (Linux/macOS) or `.\shelly2esphome.exe --version` (Windows PowerShell)
+  from the extracted directory. Rust is not required.
 - **From crates.io** (needs a [Rust toolchain](https://rustup.rs)):
   `cargo install shelly2esphome`. The crate carries the packages of its own
   version, so the build needs no further download.
@@ -219,7 +225,7 @@ request branch of this repository. Pull requests from forks must set it
 themselves; CI names the expected version. A version raised by hand is kept if
 it is higher. The first release takes the version from `Cargo.toml`. Every push to `main` that passes CI is released as
 `v<crate version>`: a GitHub release with `mg2esphome-packages.zip` and the
-single packages, and the crate on crates.io with the packages inside (needs
+single packages and prebuilt CLI archives, and the crate on crates.io with the packages inside (needs
 the repository secret `CARGO_REGISTRY_TOKEN`). A version on `main` that is not
 released yet counts as taken, and a changed pull request title runs CI again.
 Still bring a branch up to date with `main` before merging: a version computed
