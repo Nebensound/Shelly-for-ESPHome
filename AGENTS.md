@@ -1,7 +1,31 @@
 # Contribution Rules for This Repository
 
-The [Nebensound Coding Guidelines](https://github.com/Nebensound/Nebensound-Coding-Guidlines)
-apply. This file adds what is specific to this repository.
+These rules apply to every change, by people and by coding agents.
+
+## Engineering rules
+
+- **Types carry meaning.** Model domain values (models, versions, sizes,
+  digests, addresses) as types, not loose strings or integers. No `unsafe`
+  Rust; `unwrap` is denied outside tests.
+- **Errors are handled, not hidden.** Every failure reaches the user with
+  its context; production code does not panic. An error path that cannot
+  occur is written without a branch rather than left untested (see Known
+  deviations).
+- **Formatter and linter are clean.** `cargo fmt`, `cargo clippy -D warnings`
+  and `clang-format` for the firmware, with the same settings locally and in
+  CI.
+- **100 % coverage of production code.** Rust: regions, lines and functions.
+  The host-tested firmware modules: lines, branches and functions. Every
+  exclusion needs a specific reason next to it.
+- **Tests come with the change.** New behaviour and every fixed bug get a
+  test that fails without the change.
+- **Security.** No secrets in code, tests, fixtures or logs; workflows get
+  only the permissions they need. Respect the invariants below.
+- **Documentation.** Public items are documented (`missing_docs` is denied).
+  Comments explain why, invariants and pitfalls, not what the code says.
+- **Focused changes.** One concern per pull request, with a description of
+  what changes and why, and the checks listed in the README passing
+  locally first.
 
 ## Purpose
 
@@ -86,10 +110,6 @@ live here were removed on purpose; do not reintroduce them.
 
 ## Known deviations
 
-- The central Nebensound workflow (`.nebensound/repo.toml`) is not used yet
-  because `github-automation` is not ready for this project type. `ci.yml` is
-  the transitional local gate. Migration target: switch once the central Rust
-  workflow is usable.
 - The migration firmware can only be built with `mos` (Docker). It is built in
   CI, not in every local environment.
 - `main.c` (hardware glue) cannot run on the host. Its behaviour is covered by
