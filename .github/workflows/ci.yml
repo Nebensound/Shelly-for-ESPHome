@@ -61,11 +61,13 @@ jobs:
           - ShellyUni
     steps:
       - uses: actions/checkout@v4
-      # mos and everything it fetches are pinned to the Mongoose OS release
-      # 2.20.0 (see libs_version in migration_firmware/mos.yml): libraries and
-      # modules from their fixed 2.20.0 tags, the prebuilt libraries from the
-      # 2.20.0 release assets. Clones authenticate with the workflow token,
-      # because GitHub may refuse anonymous clones (changelog 2026-10-19).
+      # Everything that goes into the firmware is pinned to the Mongoose OS
+      # release 2.20.0 by migration_firmware/mos.yml: libraries and modules
+      # from their fixed 2.20.0 tags, the prebuilt libraries from the 2.20.0
+      # release assets, the toolchain image of 2.20.0. The mos tool itself is
+      # whatever mongoose-os.com serves for 2.20.0 (currently the last build,
+      # 2.20.0-20); its version is only logged. Clones authenticate with the
+      # workflow token, because GitHub may refuse anonymous clones.
       - name: Install mos
         env:
           MOS_VERSION: 2.20.0
@@ -73,8 +75,7 @@ jobs:
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/mos" \
             "https://mongoose-os.com/downloads/mos-$MOS_VERSION/linux/mos"
           chmod +x "$RUNNER_TEMP/mos"
-          "$RUNNER_TEMP/mos" version | tee "$RUNNER_TEMP/mos-version.txt"
-          grep -q "$MOS_VERSION" "$RUNNER_TEMP/mos-version.txt"
+          "$RUNNER_TEMP/mos" version
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Build with mos (local, Docker)
         working-directory: migration_firmware
