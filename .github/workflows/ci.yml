@@ -85,6 +85,15 @@ jobs:
           printf 'github.com:%s\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/mos-credentials"
           mos build --local --platform esp8266 --build-var MODEL=${{ matrix.model }} \
             --credentials "@$RUNNER_TEMP/mos-credentials"
+      - name: List fetched dependencies (temporary, for pinning)
+        if: matrix.model == 'Shelly1PM' || matrix.model == 'ShellyDimmer2'
+        working-directory: migration_firmware
+        run: |
+          for d in deps/*/ deps/modules/*/; do
+            [ -e "$d/.git" ] && echo "DEP ${d%/} $(git -C "$d" remote get-url origin) $(git -C "$d" rev-parse HEAD)"
+          done
+          find build -name 'lib*.a' -exec sha256sum {} \; | sed 's/^/BIN /'
+          docker images --digests --format 'IMG {{.Repository}}:{{.Tag}} {{.Digest}}'
       - name: Install PyYAML
         run: sudo apt-get update && sudo apt-get install -y python3-yaml
       - name: Verify package manifest
