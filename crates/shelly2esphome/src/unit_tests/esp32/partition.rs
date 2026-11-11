@@ -8,8 +8,8 @@ fn reads_a_table_with_and_without_checksum() {
     let parsed = PartitionTable::parse(&table(&LAYOUT)).expect("table");
     assert_eq!(parsed.entries().len(), LAYOUT.len());
     let app = parsed.find("app_0").expect("app_0");
-    assert_eq!((app.kind, app.subtype, app.offset, app.size), (0, 0x10, 0x1_0000, 0x1_0000));
-    assert_eq!(app.to_string(), "type 0/0x10 at 0x10000, 0x10000 bytes");
+    assert_eq!((app.kind, app.subtype, app.offset, app.size), (0, 0x10, 0x2_0000, 0x30_0000));
+    assert_eq!(app.to_string(), "type 0/0x10 at 0x20000, 0x300000 bytes");
     assert_eq!(app.flags, 0);
     assert!(parsed.find("missing").is_none());
 
@@ -48,8 +48,8 @@ fn compares_flags_too() {
     assert_eq!(encrypted.find("nvs").map(|nvs| nvs.flags), Some(1));
     assert_eq!(
         encrypted.differences(&reference).critical,
-        ["nvs: type 1/0x02 at 0xb000, 0x5000 bytes, flags 0x1, the device has type 1/0x02 at \
-          0xb000, 0x5000 bytes"]
+        ["nvs: type 1/0x02 at 0x14000, 0xc000 bytes, flags 0x1, the device has type 1/0x02 at \
+          0x14000, 0xc000 bytes"]
     );
 }
 
@@ -59,7 +59,7 @@ fn tells_critical_from_other_differences() {
     assert_eq!(reference.differences(&reference), TableDifferences::default());
 
     let mut changed = LAYOUT.to_vec();
-    changed[2].4 = 0x2_0000; // app_0 larger
+    changed[2].4 = 0x2C_0000; // app_0 larger
     changed.retain(|entry| entry.0 != "fs_1" && entry.0 != "shelly");
     changed.push(("coredump", 1, 0x03, 0x5_0000, 0x1000));
     let own = PartitionTable::parse(&table(&changed)).expect("changed");
@@ -67,8 +67,8 @@ fn tells_critical_from_other_differences() {
     assert_eq!(
         differences.critical,
         [
-            "app_0: type 0/0x10 at 0x10000, 0x20000 bytes, the device has type 0/0x10 at \
-             0x10000, 0x10000 bytes",
+            "app_0: type 0/0x10 at 0x20000, 0x2c0000 bytes, the device has type 0/0x10 at \
+             0x20000, 0x300000 bytes",
             "fs_1: missing, the device has it",
         ]
     );

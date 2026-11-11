@@ -84,8 +84,9 @@ pub enum FactoryError {
     },
 }
 
-/// A factory image whose parts are located and verified.
-#[derive(Debug, Clone)]
+/// A factory image whose parts are located and verified. The application
+/// holds the user's Wi-Fi credentials, so `Debug` shows the parts but not
+/// the bytes, and the type is not `Clone`.
 pub struct FactoryImage {
     bytes: Vec<u8>,
     bootloader_address: usize,
@@ -93,6 +94,17 @@ pub struct FactoryImage {
     table: PartitionTable,
     app_offset: usize,
     app: Esp32Image,
+}
+
+impl std::fmt::Debug for FactoryImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FactoryImage")
+            .field("len", &self.bytes.len())
+            .field("bootloader", &self.bootloader)
+            .field("app", &self.app)
+            .finish_non_exhaustive()
+    }
 }
 
 impl FactoryImage {

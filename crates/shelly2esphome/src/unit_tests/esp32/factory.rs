@@ -20,6 +20,10 @@ fn accepts_a_matching_factory_image() {
     assert_eq!(factory.app_bytes(), fixture.app.as_slice());
     assert!(factory.app().is_app);
     assert!(factory.partition_table().find("app_0").is_some());
+    // The bytes hold the Wi-Fi credentials: Debug leaves them out.
+    let shown = format!("{factory:?}");
+    assert!(shown.starts_with(&format!("FactoryImage {{ len: {}, ", fixture.factory().len())));
+    assert!(shown.ends_with(", .. }") && shown.len() < 400, "{shown}");
 
     // A differing non-critical partition only warns.
     let mut other = Fixture::default();
@@ -48,7 +52,7 @@ fn refuses_factory_images_that_do_not_suit_the_device() {
     assert!(ota_image.to_string().contains("firmware.factory.bin"));
     assert!(matches!(
         error(&|fixture| fixture.table[0] = 0),
-        FactoryError::PartitionTable { address: 0x8000, .. }
+        FactoryError::PartitionTable { address: 0xf000, .. }
     ));
     let without = |label: &'static str| {
         move |fixture: &mut Fixture| {
@@ -61,10 +65,10 @@ fn refuses_factory_images_that_do_not_suit_the_device() {
     assert_eq!(error(&without("app_0")), FactoryError::MissingPartition("app_0"));
     assert!(matches!(error(&|fixture| fixture.app[0] = 0), FactoryError::App(_)));
     assert_eq!(error(&|fixture| fixture.app = image(ImageSpec::default())), FactoryError::NotAnApp);
-    let big = image(ImageSpec { app: true, payload: 0x1_0000, ..ImageSpec::default() });
+    let big = image(ImageSpec { app: true, payload: 0x30_0000, ..ImageSpec::default() });
     assert!(matches!(
         error(&|fixture| fixture.app = big.clone()),
-        FactoryError::AppTooLarge { capacity: 0x1_0000, .. }
+        FactoryError::AppTooLarge { capacity: 0x30_0000, .. }
     ));
     let mut moved = LAYOUT.to_vec();
     moved[1].3 = 0xC000; // nvs at another offset
@@ -93,7 +97,7 @@ fn refuses_factory_images_that_do_not_suit_the_device() {
 fn refuses_a_used_otadata_area() {
     let fixture = Fixture::default();
     let mut factory = fixture.factory();
-    factory[0x9000] = 0x00;
+    factory[0x1_1000] = 0x00;
     let error = FactoryImage::check(factory, &package(&fixture)).expect_err("used otadata");
     assert_eq!(error, FactoryError::OtadataNotErased);
 }

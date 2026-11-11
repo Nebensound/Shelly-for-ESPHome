@@ -213,7 +213,7 @@ async fn probes_later_generations_and_refuses_to_flash_them() {
 
 #[tokio::test]
 async fn checks_a_factory_image_against_the_official_package() {
-    use shelly2esphome::esp32::synthetic::{Fixture, LAYOUT, table};
+    use shelly2esphome::esp32::synthetic::{Fixture, LAYOUT, table, zip_package};
     let settings = Settings::default();
     let fixture = Fixture::default();
     let package = write_temp("S1G3.zip", &fixture.package());
@@ -226,9 +226,14 @@ async fn checks_a_factory_image_against_the_official_package() {
          match the official package."
     ));
     assert!(
-        ok.out.contains(&format!("Application: {} of 65536 bytes in app_0.", fixture.app.len()))
+        ok.out.contains(&format!("Application: {} of 3145728 bytes in app_0.", fixture.app.len()))
     );
-    assert!(ok.out.contains("Gen2/Gen3 devices cannot be flashed yet."));
+    assert!(ok.out.contains(
+        "ESPHome's bootloader (min_version 1.0.9 instead of 1.0.2) and an erased otadata. It \
+         holds the Wi-Fi credentials of the firmware and is built in memory only.\nGen2/Gen3 \
+         devices cannot be flashed yet."
+    ));
+    assert!(ok.out.contains("ESPHome package for S1G3: "));
     assert!(!ok.out.contains("Note:"));
 
     let other = Fixture { table: table(&LAYOUT[..6]), ..Fixture::default() };
@@ -248,7 +253,15 @@ async fn checks_a_factory_image_against_the_official_package() {
     let broken = write_temp("broken.factory.bin", &damaged.factory());
     let unsuitable = run(&["check", &broken, "--package", &package], &settings).await;
     assert_eq!(unsuitable.code, ExitCode::FAILURE);
-    assert!(unsuitable.err.contains("does not suit S1G3: no valid bootloader at 0x0"));
+    assert!(unsuitable.err.contains(&format!(
+        "no ESPHome package for S1G3 from {broken}: no valid bootloader at 0x0"
+    )));
+    let mut manifest = fixture.manifest();
+    manifest["name"] = "S1G4".into();
+    let unknown = write_temp("S1G4.zip", &zip_package(&manifest, &fixture.files()));
+    let refused = run(&["check", &factory, "--package", &unknown], &settings).await;
+    assert_eq!(refused.code, ExitCode::FAILURE);
+    assert!(refused.err.contains("S1G4 has no profile"), "{}", refused.err);
 }
 
 #[tokio::test]

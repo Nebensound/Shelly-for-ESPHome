@@ -19,12 +19,14 @@ use crate::{
     backup,
     device::{Credentials, DeviceClient, Firmware},
     discover::{self, Network, ScanOptions},
-    esp32::factory::{APP_PARTITION, FactoryImage},
+    esp32::factory::APP_PARTITION,
+    esphome_package::EsphomePackage,
     fetch::{self, FetchOptions, Source},
     flash::{self, FlashOptions, Reporter, local_ip_towards},
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
+    profile::BOOT_MIN_VERSION,
     report::{self, DeviceFacts, Report},
     rpc::{AppName, WifiSignal},
     stock_package::StockPackage,
@@ -397,8 +399,11 @@ fn check_factory(
     stock: &StockPackage,
     terminal: &mut Terminal<'_>,
 ) -> anyhow::Result<()> {
-    let (factory, warnings) = FactoryImage::check(read_file(firmware)?, stock)
-        .with_context(|| format!("{} does not suit {}", firmware.display(), stock.name()))?;
+    let (package, warnings) =
+        EsphomePackage::build(stock, read_file(firmware)?).with_context(|| {
+            format!("no ESPHome package for {} from {}", stock.name(), firmware.display())
+        })?;
+    let factory = package.factory();
     let slot = factory.partition_table().find(APP_PARTITION);
     let _ = writeln!(
         terminal.out,
@@ -414,7 +419,16 @@ fn check_factory(
     for warning in warnings {
         let _ = writeln!(terminal.out, "Note: the partition table differs in {warning}.");
     }
-    let _ = writeln!(terminal.out, "Gen2/Gen3 devices cannot be flashed yet.");
+    let _ = writeln!(
+        terminal.out,
+        "ESPHome package for {}: {} bytes with ESPHome's bootloader (min_version {} instead \
+         of {}) and an erased otadata. It holds the Wi-Fi credentials of the firmware and is \
+         built in memory only.\nGen2/Gen3 devices cannot be flashed yet.",
+        package.profile().app(),
+        package.bytes().len(),
+        BOOT_MIN_VERSION,
+        package.official_boot_version(),
+    );
     Ok(())
 }
 
