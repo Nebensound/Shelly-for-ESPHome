@@ -69,6 +69,12 @@ pub struct Fake {
 
 pub type Shared = Arc<Mutex<Fake>>;
 
+/// A GET with a client from `shelly2esphome::http`, which installs the
+/// crypto provider.
+async fn http_get(url: &str) -> reqwest::Result<reqwest::Response> {
+    shelly2esphome::http::builder().build()?.get(url).send().await
+}
+
 pub fn fake(mode: Mode) -> Fake {
     Fake {
         mode,
@@ -173,7 +179,7 @@ pub async fn ota(State(shared): State<Shared>, Query(query): Query<OtaQuery>) ->
         }
     }
     tokio::spawn(async move {
-        let package = reqwest::get(&query.url).await.unwrap().bytes().await.unwrap();
+        let package = http_get(&query.url).await.unwrap().bytes().await.unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await; // reboots
         let mut fake = shared.lock().unwrap();
         fake.package = package.to_vec();
@@ -230,7 +236,7 @@ pub async fn mg2x_flash(
         fake.size = request.size;
     }
     tokio::spawn(async move {
-        let image = reqwest::get(&request.url).await.unwrap().bytes().await.unwrap();
+        let image = http_get(&request.url).await.unwrap().bytes().await.unwrap();
         let digest = hex::encode(Sha256::digest(&image));
         let (fail_with, open_port, port, skip_installing) = {
             let mut fake = shared.lock().unwrap();
