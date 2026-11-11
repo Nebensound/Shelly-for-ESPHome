@@ -34,6 +34,10 @@ fn refuses_malformed_and_damaged_tables() {
     let mut damaged = good.clone();
     damaged[20] ^= 0x01;
     assert_eq!(parse(&damaged), PartitionError::Checksum);
+    // A second app_0 at another offset, with a valid MD5.
+    let mut doubled = LAYOUT.to_vec();
+    doubled.push(("app_0", 0, 0x12, 0x5_0000, 0x1_0000));
+    assert_eq!(parse(&table(&doubled)), PartitionError::DuplicateLabel("app_0".into()));
 }
 
 #[test]

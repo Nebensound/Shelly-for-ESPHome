@@ -58,6 +58,10 @@ pub enum PartitionError {
     /// The table runs past its maximum size or the end of the data.
     #[error("the partition table has no end marker")]
     Unterminated,
+    /// Two entries share a label; ESP-IDF's table generator refuses that,
+    /// and a comparison by label would miss the second one.
+    #[error("the partition table names {0} twice")]
+    DuplicateLabel(String),
     /// The MD5 entry does not match the entries.
     #[error("the MD5 checksum of the partition table does not match (damaged table)")]
     Checksum,
@@ -107,6 +111,11 @@ impl PartitionTable {
     }
 
     fn finish(entries: Vec<Partition>) -> Result<Self, PartitionError> {
+        let mut labels: Vec<&str> = entries.iter().map(|entry| entry.label.as_str()).collect();
+        labels.sort_unstable();
+        if let Some(pair) = labels.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(PartitionError::DuplicateLabel(pair[0].to_owned()));
+        }
         if entries.is_empty() { Err(PartitionError::Empty) } else { Ok(Self { entries }) }
     }
 
