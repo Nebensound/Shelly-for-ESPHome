@@ -254,16 +254,29 @@ fn is_version(value: &str) -> bool {
             .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
-/// `<os>-<arch>` as Rust names them, e.g. `linux-x86_64`.
+/// Operating systems as Rust names them (`std::env::consts::OS`) that can
+/// run the tool. A closed list: the field must not carry any other text.
+const OPERATING_SYSTEMS: [&str; 10] = [
+    "linux",
+    "macos",
+    "windows",
+    "freebsd",
+    "netbsd",
+    "openbsd",
+    "dragonfly",
+    "illumos",
+    "solaris",
+    "android",
+];
+/// Architectures as Rust names them (`std::env::consts::ARCH`).
+const ARCHITECTURES: [&str; 9] =
+    ["x86_64", "aarch64", "x86", "arm", "riscv64", "powerpc64", "s390x", "loongarch64", "mips64"];
+
+/// `<os>-<arch>` as the tool writes it, e.g. `linux-x86_64`.
 fn is_platform(value: &str) -> bool {
-    value.split_once('-').is_some_and(|(os, arch)| {
-        [os, arch].iter().all(|part| {
-            !part.is_empty()
-                && part
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-        })
-    })
+    value
+        .split_once('-')
+        .is_some_and(|(os, arch)| OPERATING_SYSTEMS.contains(&os) && ARCHITECTURES.contains(&arch))
 }
 
 /// `-67 dBm`.

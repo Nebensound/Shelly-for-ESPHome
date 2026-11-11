@@ -130,6 +130,7 @@ fn accepts_what_the_tool_writes() {
         ("package", "file"),
         ("package", "unknown"),
         ("platform", "windows-aarch64"),
+        ("platform", "freebsd-riscv64"),
     ] {
         assert_eq!(submission(&coded_with(id, value)).problems(), Vec::<String>::new(), "{id}");
     }
@@ -162,6 +163,8 @@ fn refuses_values_the_tool_does_not_write() {
         ("platform", "linux"),
         ("platform", "linux-"),
         ("platform", "Linux-x86_64"),
+        ("platform", "my_kitchen-private_wifi"),
+        ("platform", "linux-wifi"),
         ("duration", "94"),
         ("duration", "long s"),
     ] {
