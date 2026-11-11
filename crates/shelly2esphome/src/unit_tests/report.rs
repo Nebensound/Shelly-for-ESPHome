@@ -66,7 +66,13 @@ fn keeps_only_stock_build_identifiers() {
         report.facts.stock_firmware = Some(build.to_owned());
         report.fields()[3].1.clone()
     };
-    for build in ["20230913-114008/v1.14.0-gcb84623", "20210115-102730/v1.9.4@e2732e05"] {
+    for build in [
+        "20230913-114008/v1.14.0-gcb84623",
+        "20210115-102730/v1.9.4@e2732e05",
+        "20230309-114628/v1.13.0-rc1-g1234567",
+        "20221027-091427/v1.12.1-beta2",
+        "20221027-091427/v1.12.1",
+    ] {
         assert_eq!(with(build), build);
     }
     for text in [
@@ -78,6 +84,13 @@ fn keeps_only_stock_build_identifiers() {
         "20230913-114008/1.14.0",                                     // no v
         "20230913-114008/v",                                          // nothing after v
         "20230913-114008/v1.14.0 admin:secret",                       // free text
+        "20230913-114008/v1.14.0-my-kitchen-light",                   // a name after the version
+        "20230913-114008/v1.14.0-10.0.0.2", // an address after the version
+        "20230913-114008/v1.14.0-admin@secret", // no hash after the @
+        "20230913-114008/v1.14.0@E2732E05", // uppercase hash
+        "20230913-114008/v1.14-gcb84623",   // two numbers
+        "20230913-114008/v1.14.0-rcx",      // no number after rc
+        "20230913-114008/v1.14.00000",      // too many digits
         "20230913-114008/v1.14.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // too long
     ] {
         assert_eq!(with(text), "unknown", "{text}");

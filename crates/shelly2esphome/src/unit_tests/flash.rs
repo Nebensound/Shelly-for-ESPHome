@@ -55,6 +55,11 @@ async fn names_every_failure_for_device_reports() {
         FlashError::Device(DeviceError::AuthRequired),
         // The login is missing only for the settings the backup reads.
         FlashError::Backup(BackupError::Device(DeviceError::AuthRequired)),
+        // A package for another model, refused before the confirmation.
+        FlashError::Package(PackageError::WrongModel {
+            expected: "ShellyDimmer2",
+            found: "Shelly1".into(),
+        }),
         FlashError::UnsupportedModel("SHXX-1".into()),
         FlashError::UnsupportedGeneration { model, generation },
         FlashError::WeakSignal { rssi_dbm: -90, min_rssi_dbm: -75 },
@@ -91,6 +96,7 @@ async fn names_every_failure_for_device_reports() {
         (FlashError::DeviceFailed("http_4040".into()), "device-failed:other"),
         (FlashError::DeviceFailed("http_abc".into()), "device-failed:other"),
         (FlashError::DeviceFailed(String::new()), "device-failed:other"),
+        (FlashError::StagingSlotTooSmall { size: 2, max_size: 1 }, "staging-slot-too-small"),
         (FlashError::InstallFatal, "install-fatal"),
         (FlashError::FlashTimeout, "flash-timeout"),
         (FlashError::EsphomeNotSeen("10.0.0.2:6053".parse().expect("addr")), "esphome-not-seen"),

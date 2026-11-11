@@ -392,6 +392,15 @@ async fn links_a_failure_report_after_the_error() {
     assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
     assert!(resumed.out.is_empty(), "{}", resumed.out);
 
+    // A package for another model is refused before any change: no link.
+    let (host, shared, settings) = flash_settings(Mode::Stock).await;
+    let other = write_temp("mg2esphome-Shelly1.zip", package(Model::Shelly1).bytes());
+    let wrong =
+        run(&["flash", &host, "-f", &firmware_file(), "-m", &other, "--yes"], &settings).await;
+    assert!(wrong.err.contains("wrong model"), "{}", wrong.err);
+    assert!(!wrong.err.contains("Please report"), "{}", wrong.err);
+    assert_eq!(shared.lock().unwrap().ota_requests, 0);
+
     // A refusal before any change links nothing.
     let (host, _, settings) = flash_settings(Mode::Stock).await;
     let weak = run(&["flash", &host, "-f", &firmware_file(), "--min-rssi", "-50"], &settings).await;

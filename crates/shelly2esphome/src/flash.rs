@@ -195,6 +195,20 @@ pub enum FlashError {
         /// Slot size reported by the device.
         max_size: u64,
     },
+    /// The image does not fit into the staging slot the migration firmware
+    /// reports. Unlike [`FlashError::ImageTooLarge`], this happens after the
+    /// stock firmware installed the migration firmware.
+    #[error(
+        "the firmware is too large for the staging slot of the migration firmware with {size} \
+         bytes (at most {max_size} bytes). The device waits in the migration firmware and \
+         accepts a smaller image: run the command again with one."
+    )]
+    StagingSlotTooSmall {
+        /// Image size.
+        size: u64,
+        /// Slot size reported by the migration firmware.
+        max_size: u64,
+    },
     /// The migration firmware reported a failed job.
     #[error(
         "the device reports the error \"{0}\". It stays in the migration firmware and accepts \
@@ -263,6 +277,7 @@ impl FlashError {
         let kind = match self {
             Self::Device(DeviceError::AuthRequired)
             | Self::Backup(BackupError::Device(DeviceError::AuthRequired))
+            | Self::Package(PackageError::WrongModel { .. })
             | Self::UnsupportedModel(_)
             | Self::UnsupportedGeneration { .. }
             | Self::WeakSignal { .. }
@@ -284,6 +299,7 @@ impl FlashError {
             Self::DeviceFailed(error) => {
                 return Some(format!("device-failed:{}", error_token(error)));
             }
+            Self::StagingSlotTooSmall { .. } => "staging-slot-too-small",
             Self::InstallFatal => "install-fatal",
             Self::FlashTimeout => "flash-timeout",
             Self::EsphomeNotSeen(_) => "esphome-not-seen",
@@ -576,7 +592,7 @@ pub async fn run(
 
     let image_len = image.len() as u64;
     if image_len > status.max_size {
-        return Err(FlashError::ImageTooLarge { size: image_len, max_size: status.max_size });
+        return Err(FlashError::StagingSlotTooSmall { size: image_len, max_size: status.max_size });
     }
 
     reporter.info(

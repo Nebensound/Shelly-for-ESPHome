@@ -65,10 +65,44 @@ pub struct Report {
     pub duration: Duration,
 }
 
-/// Whether `text` has the form of a Gen1 stock firmware build,
-/// `YYYYMMDD-HHMMSS/v<version>` with at most 40 characters of
-/// `[0-9A-Za-z.+@_-]` after the slash. The device reports it, so anything
-/// else could be free text and is not put into a report.
+/// One to four decimal digits.
+fn is_number(text: &str) -> bool {
+    (1..=4).contains(&text.len()) && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Lowercase hex digits, as many as `lengths` allows.
+fn is_hex(text: &str, lengths: std::ops::RangeInclusive<usize>) -> bool {
+    lengths.contains(&text.len())
+        && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// The version of a stock build: `v<major>.<minor>.<patch>`, optionally
+/// `-rc<n>` or `-beta<n>`, then optionally the commit as `-g<7–12 hex>` or
+/// `@<8 hex>`, e.g. `v1.14.0-gcb84623` or `v1.9.4@e2732e05`.
+fn is_stock_version(version: &str) -> bool {
+    let (release, commit) = if let Some((release, hash)) = version.split_once('@') {
+        (release, is_hex(hash, 8..=8))
+    } else if let Some((release, _)) =
+        version.rsplit_once("-g").filter(|(_, hash)| is_hex(hash, 7..=12))
+    {
+        (release, true)
+    } else {
+        (version, true)
+    };
+    let mut parts = release.strip_prefix('v').unwrap_or_default().splitn(2, '-');
+    let numbers = parts.next().unwrap_or_default();
+    let pre_release = parts.next();
+    commit
+        && numbers.split('.').count() == 3
+        && numbers.split('.').all(is_number)
+        && pre_release.is_none_or(|pre| {
+            pre.strip_prefix("rc").or_else(|| pre.strip_prefix("beta")).is_some_and(is_number)
+        })
+}
+
+/// Whether `text` is a Gen1 stock firmware build, `YYYYMMDD-HHMMSS/<version>`
+/// (see [`is_stock_version`]). The device reports it, so anything else could
+/// be free text (a name, an address) and is not put into a report.
 fn is_stock_build(text: &str) -> bool {
     text.split_once('/').is_some_and(|(date, version)| {
         date.len() == 15
@@ -76,9 +110,7 @@ fn is_stock_build(text: &str) -> bool {
                 .bytes()
                 .enumerate()
                 .all(|(index, byte)| if index == 8 { byte == b'-' } else { byte.is_ascii_digit() })
-            && version.starts_with('v')
-            && (2..=40).contains(&version.len())
-            && version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".+@_-".contains(&byte))
+            && is_stock_version(version)
     })
 }
 

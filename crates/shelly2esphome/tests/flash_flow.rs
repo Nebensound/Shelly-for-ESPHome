@@ -299,7 +299,18 @@ async fn refuses_an_image_larger_than_the_staging_slot() {
     device.max_size = 1000;
     let (host, shared) = start_fake(device).await;
     let error = run(&host, &shared, None, &mut Recorder::default()).await.unwrap_err();
-    assert!(matches!(error, FlashError::ImageTooLarge { max_size: 1000, .. }));
+    assert!(matches!(error, FlashError::StagingSlotTooSmall { max_size: 1000, .. }));
+
+    // The same after the stock firmware installed the migration firmware:
+    // the device has changed, so this is no refusal before any change.
+    let mut device = fake(Mode::Stock);
+    device.max_size = 1000;
+    let (host, shared) = start_fake(device).await;
+    let package = package(Model::ShellyDimmer2);
+    let error = run(&host, &shared, Some(&package), &mut Recorder::default()).await.unwrap_err();
+    assert!(matches!(error, FlashError::StagingSlotTooSmall { max_size: 1000, .. }));
+    assert_eq!(shared.lock().unwrap().ota_requests, 1);
+    assert!(error.report_kind().is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
