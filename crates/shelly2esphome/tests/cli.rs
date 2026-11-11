@@ -251,6 +251,48 @@ async fn checks_a_factory_image_against_the_official_package() {
     assert!(unsuitable.err.contains("does not suit S1G3: no valid bootloader at 0x0"));
 }
 
+#[tokio::test]
+async fn checks_a_factory_image_against_the_downloaded_package() {
+    use common::cloud::Cloud;
+    use shelly2esphome::esp32::synthetic::Fixture;
+    let fixture = Fixture::default();
+    let factory = write_temp("firmware.factory.bin", &fixture.factory());
+    let cloud = Cloud::start().await;
+    let url = cloud.publish("S1G3", "2.0.3", &fixture.package());
+    let cache = scratch_dir();
+    let file = cache.join("S1G3").join("2.0.3.zip");
+    let settings = Settings { fetch: cloud.options(Some(cache)), ..Settings::default() };
+
+    let downloaded = run(&["check", &factory, "--app", "S1G3"], &settings).await;
+    assert_eq!(downloaded.code, ExitCode::SUCCESS, "{}", downloaded.err);
+    assert!(downloaded.out.starts_with(&format!(
+        "Official package S1G3 2.0.3: downloaded from {url}, kept in {}.\n",
+        file.display()
+    )));
+    assert!(downloaded.out.contains("ESP32-C3 factory image for S1G3 2.0.3;"));
+    let cached = run(&["check", &factory, "--app", "S1G3"], &settings).await;
+    assert!(cached.out.starts_with(&format!(
+        "Official package S1G3 2.0.3: from the cache {}.\n",
+        file.display()
+    )));
+    let uncached = Settings { fetch: cloud.options(None), ..Settings::default() };
+    let fresh = run(&["check", &factory, "--app", "S1G3"], &uncached).await;
+    assert!(
+        fresh.out.starts_with(&format!("Official package S1G3 2.0.3: downloaded from {url}.\n"))
+    );
+
+    let unknown = run(&["check", &factory, "--app", "Plus1PM"], &settings).await;
+    assert_eq!(unknown.code, ExitCode::FAILURE);
+    assert!(unknown.err.contains(
+        "cannot get the official package of Plus1PM: \
+         https://updates.shelly.cloud/update/Plus1PM: HTTP status client error (404 Not Found)"
+    ));
+    let invalid = run(&["check", &factory, "--app", "../S1G3"], &settings).await;
+    assert!(invalid.err.contains("\"../S1G3\" is no application name"), "{}", invalid.err);
+    let both = run(&["check", &factory, "--app", "S1G3", "--package", "x.zip"], &settings).await;
+    assert!(both.err.contains("cannot be used with"), "{}", both.err);
+}
+
 fn scan_settings(port: u16) -> Settings {
     Settings {
         scan: ScanOptions { port, timeout: Duration::from_millis(300), ..ScanOptions::default() },
