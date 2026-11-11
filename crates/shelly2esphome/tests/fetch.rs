@@ -91,6 +91,16 @@ async fn refuses_packages_that_are_not_the_announced_one() {
         error(&cloud, None).await,
         format!("{other}: the package is S1G3 2.0.3, the update service announced S1G3 2.0.4")
     );
+
+    // A valid package of the announced version, but for another app.
+    let foreign = cloud.publish("Mini1G3", "2.0.3", &package);
+    let mini: AppName = "Mini1G3".parse().unwrap();
+    let error = fetch(&mini, &cloud.options(None)).await.unwrap_err();
+    assert!(matches!(error, FetchError::Mismatch { .. }), "{error}");
+    assert_eq!(
+        error.to_string(),
+        format!("{foreign}: the package is S1G3 2.0.3, the update service announced Mini1G3 2.0.3")
+    );
 }
 
 #[tokio::test]
