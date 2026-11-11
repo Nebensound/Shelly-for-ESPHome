@@ -14,6 +14,17 @@ updates:
       cargo-minor-and-patch:
         update-types: [minor, patch]
 
+  - package-ecosystem: pip
+    directory: /migration_firmware
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      pip-minor-and-patch:
+        update-types: [minor, patch]
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
