@@ -35,6 +35,8 @@ async fn downloads_verifies_and_caches_the_package() {
     assert_eq!(first.package.version().as_str(), "2.0.3");
     assert_eq!(first.source, Source::Downloaded { url: url.clone(), cached: Some(file.clone()) });
     assert_eq!(std::fs::read(&file).unwrap(), package);
+    let entries = std::fs::read_dir(cache.join("S1G3")).unwrap().count();
+    assert_eq!(entries, 1, "no temporary file is left");
 
     // The update service is asked again, the package comes from the cache.
     let second = fetch(&s1g3(), &cloud.options(Some(cache.clone()))).await.unwrap();
@@ -42,11 +44,14 @@ async fn downloads_verifies_and_caches_the_package() {
     let path = url.trim_start_matches("https://fwcdn.shelly.cloud");
     assert_eq!(cloud.requests(), ["/update/S1G3", path, "/update/S1G3"]);
 
-    // A cached file that is not the announced package is replaced.
-    std::fs::write(&file, b"stale").unwrap();
-    let third = fetch(&s1g3(), &cloud.options(Some(cache))).await.unwrap();
-    assert!(matches!(third.source, Source::Downloaded { .. }));
-    assert_eq!(std::fs::read(&file).unwrap(), package);
+    // A cached file that is not the announced package is replaced, also one
+    // larger than any package.
+    for stale in [b"stale".to_vec(), vec![0; MAX_PACKAGE_BYTES + 1]] {
+        std::fs::write(&file, stale).unwrap();
+        let again = fetch(&s1g3(), &cloud.options(Some(cache.clone()))).await.unwrap();
+        assert!(matches!(again.source, Source::Downloaded { .. }));
+        assert_eq!(std::fs::read(&file).unwrap(), package);
+    }
 
     let uncached = fetch(&s1g3(), &cloud.options(None)).await.unwrap();
     assert_eq!(uncached.source, Source::Downloaded { url, cached: None });
@@ -166,13 +171,24 @@ async fn reports_cache_failures() {
     std::fs::create_dir_all(&file).unwrap();
     let message = error(&cloud, Some(unreadable)).await;
     assert!(message.starts_with(&format!("package cache {}: ", file.display())), "{message}");
+}
 
-    // The package cannot be written (its temporary file is a directory).
-    let unwritable = scratch_dir();
-    let file = unwritable.join("S1G3").join("2.0.3.zip");
-    std::fs::create_dir_all(unwritable.join("S1G3").join("2.0.3.zip.part")).unwrap();
-    let message = error(&cloud, Some(unwritable)).await;
+/// The package cannot be written: its directory is read-only.
+#[cfg(unix)]
+#[tokio::test]
+async fn reports_an_unwritable_cache() {
+    use std::os::unix::fs::PermissionsExt;
+    let cloud = Cloud::start().await;
+    cloud.publish("S1G3", "2.0.3", &Fixture::default().package());
+    let cache = scratch_dir();
+    let directory = cache.join("S1G3");
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let message = error(&cloud, Some(cache)).await;
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let file = directory.join("2.0.3.zip");
     assert!(message.starts_with(&format!("package cache {}: ", file.display())), "{message}");
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0, "nothing is left behind");
 }
 
 #[tokio::test]

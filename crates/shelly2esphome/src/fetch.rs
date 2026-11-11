@@ -14,8 +14,10 @@
 
 use std::{
     error::Error as _,
+    io::{Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
+    sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -226,24 +228,41 @@ fn verify(
 }
 
 /// The cached package of `release`, if the cache holds it with the announced
-/// SHA-256.
+/// SHA-256. Reads at most one byte more than a package may have, so an
+/// oversized file is a miss instead of being read whole.
 fn cached(path: &Path, digest: &[u8; 32]) -> Result<Option<Vec<u8>>, FetchError> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes).filter(|bytes| Sha256::digest(bytes).as_slice() == digest)),
+    let limit = u64::try_from(MAX_PACKAGE_BYTES).unwrap_or(u64::MAX).saturating_add(1);
+    let read = std::fs::File::open(path).and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(limit).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    match read {
+        Ok(bytes) => Ok(Some(bytes).filter(|bytes| {
+            bytes.len() <= MAX_PACKAGE_BYTES && Sha256::digest(bytes).as_slice() == digest
+        })),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(FetchError::Cache { path: path.to_owned(), reason: error.to_string() }),
     }
 }
 
-/// Writes the package to `path` through a temporary file, so that an
-/// interrupted write never leaves a partial package under the final name.
+/// Writes the package to `path` through a temporary file of its own, so
+/// that neither an interrupted write nor a concurrent one (another process,
+/// or another device in the same run) leaves a partial package under the
+/// final name.
 fn store(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
-    let partial = path.with_extension("zip.part");
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let unique = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+    let partial = path.with_extension(format!("zip.{unique}.part"));
     path.parent()
         .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&partial, bytes))
+        .and_then(|()| std::fs::OpenOptions::new().write(true).create_new(true).open(&partial))
+        .and_then(|mut file| file.write_all(bytes))
         .and_then(|()| std::fs::rename(&partial, path))
-        .map_err(|error| FetchError::Cache { path: path.to_owned(), reason: error.to_string() })
+        .map_err(|error| {
+            // Nothing is left behind; the file may not even exist.
+            let _ = std::fs::remove_file(&partial);
+            FetchError::Cache { path: path.to_owned(), reason: error.to_string() }
+        })
 }
 
 /// Fetches the current stable official package of `app`.
