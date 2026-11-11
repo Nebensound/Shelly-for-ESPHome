@@ -222,47 +222,51 @@ fn writes_one_field_per_line() {
 #[test]
 fn takes_a_report_in() {
     let root = scratch("intake");
-    let decision = intake(12, &body(), &trusted(), &root).expect("written");
+    let decision = intake(12, &body(), &trusted(), &[], &root).expect("written");
     assert_eq!(
         decision,
         Decision {
             verdict: Verdict::Accept,
             reasons: vec![],
-            file: Some("docs/device-reports/12.json".into())
+            file: Some("docs/device-reports/12.json".into()),
+            duplicate: None,
         }
     );
     let written = std::fs::read_to_string(root.join("docs/device-reports/12.json")).expect("file");
     assert_eq!(written, submission(&coded_with("", "")).file_text());
 
-    let review =
-        intake(13, &body(), &Author { account_age_days: 1, ..trusted() }, &root).expect("written");
+    let review = intake(13, &body(), &Author { account_age_days: 1, ..trusted() }, &[], &root)
+        .expect("written");
     assert_eq!(review.verdict, Verdict::Review);
     assert_eq!(review.reasons.len(), 1);
     assert_eq!(check_reports(&root).expect("valid"), 2);
 
     let mut edited = coded_with("", "");
     edited[4].1 = "-40 dBm".into();
-    let refused = intake(14, &body_of(&edited), &trusted(), &root).expect("decided");
+    let refused = intake(14, &body_of(&edited), &trusted(), &[], &root).expect("decided");
     assert_eq!((refused.verdict, refused.file), (Verdict::Reject, None));
-    let incomplete = intake(15, "", &trusted(), &root).expect("decided");
+    let incomplete = intake(15, "", &trusted(), &[], &root).expect("decided");
     assert_eq!((incomplete.verdict, incomplete.reasons.len()), (Verdict::Reject, 12));
     assert!(!root.join("docs/device-reports/14.json").exists());
 
     // The failure form carries the same label; such a report is left alone.
     let failed = coded_with("result", "device-failed:hash_mismatch");
-    let failure = intake(17, &body_of(&failed), &trusted(), &root).expect("decided");
-    assert_eq!(failure, Decision { verdict: Verdict::Failure, reasons: vec![], file: None });
+    let failure = intake(17, &body_of(&failed), &trusted(), &[], &root).expect("decided");
+    assert_eq!(
+        failure,
+        Decision { verdict: Verdict::Failure, reasons: vec![], file: None, duplicate: None }
+    );
     // An emptied result is a missing field, not a failure.
     for empty in ["", NO_RESPONSE] {
         let emptied = coded_with("result", empty);
-        let refused = intake(18, &body_of(&emptied), &trusted(), &root).expect("decided");
+        let refused = intake(18, &body_of(&emptied), &trusted(), &[], &root).expect("decided");
         assert_eq!(refused.verdict, Verdict::Reject, "{empty:?}");
     }
     assert!(!root.join("docs/device-reports/17.json").exists());
 
     let file = root.join("a-file");
     std::fs::write(&file, "").expect("file");
-    let error = intake(16, &body(), &trusted(), &file).expect_err("not a directory");
+    let error = intake(16, &body(), &trusted(), &[], &file).expect_err("not a directory");
     assert!(format!("{error:#}").starts_with("writing "), "{error:#}");
     let _ = std::fs::remove_dir_all(root);
 }
@@ -322,4 +326,33 @@ fn checks_every_report_file() {
     let error = check_reports(&root).expect_err("unreadable");
     assert!(format!("{error:#}").starts_with("reading "), "{error:#}");
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn knows_the_failure_kinds_of_the_tool() {
+    for kind in [
+        "device-unreachable",
+        "flash-timeout",
+        "device-failed:hash_mismatch",
+        "device-failed:http_404",
+    ] {
+        assert!(is_failure_kind(kind), "{kind}");
+    }
+    for text in [
+        "success",
+        "Device-failed",
+        "device--failed",
+        "-failed",
+        "device-failed:",
+        "device-failed:Hash",
+        "device-failed:hash mismatch",
+        "my kitchen",
+    ] {
+        assert!(!is_failure_kind(text), "{text}");
+    }
+    let failed = submission(&coded_with("result", "device-failed:hash_mismatch"));
+    assert_eq!(failed.failure_problems(), Vec::<String>::new());
+    assert_eq!(failed.problems().len(), 1);
+    let success = submission(&coded_with("", ""));
+    assert_eq!(success.failure_problems().len(), 1);
 }

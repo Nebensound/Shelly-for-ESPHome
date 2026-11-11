@@ -248,6 +248,9 @@ CI passed, unless something needs a second look (an unreleased tool version, a
 new account, many reports at once, an own migration package, unusual values);
 then it waits for a maintainer. A report that fails the check gets a comment
 that names the problem, and the check runs again when you edit the issue.
+A failure report stays open as a bug. If an older open report already names
+the same model and the same kind of failure, its details are added there and
+the new one is closed as a duplicate, so each problem is discussed in one place.
 
 ## Recovery
 

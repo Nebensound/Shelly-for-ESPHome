@@ -129,3 +129,36 @@ fn reports_a_failed_write() {
     assert_eq!(format!("{error:#}"), "closed");
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+fn names_the_original_of_a_duplicate_failure() {
+    use crate::failure::tests::failure_body;
+    let root = scratch("run-failure");
+    let body = failure_body("SHSW-25", "flash-timeout");
+    let issues = serde_json::json!([{ "number": 3, "body": body }, { "number": 4, "body": null }]);
+    let list = root.join("open.json");
+    std::fs::write(&list, issues.to_string()).expect("issue list");
+    let path = event(&root, &serde_json::json!({ "number": 8, "body": body }));
+    let intake = |list: &str| {
+        let root = root.to_str().expect("UTF-8");
+        let args = ["report-intake", "--event", &path, "--account-age-days", "400"];
+        let more = ["--recent-reports", "1", "--open-issues", list, "--root", root];
+        run_with(&[&args[..], &more[..]].concat())
+    };
+    let (result, out) = intake(list.to_str().expect("UTF-8"));
+    result.expect("decided");
+    assert!(
+        out.starts_with(
+            "{\"verdict\":\"failure\",\"reasons\":[],\"file\":null,\"duplicate\":{\"original\":3,"
+        ),
+        "{out}"
+    );
+
+    let missing = root.join("missing.json");
+    let error = intake(missing.to_str().expect("UTF-8")).0.expect_err("missing");
+    assert!(format!("{error:#}").starts_with("reading "), "{error:#}");
+    std::fs::write(&list, "{}").expect("not a list");
+    let error = intake(list.to_str().expect("UTF-8")).0.expect_err("not a list");
+    assert!(format!("{error:#}").starts_with("the open issues are no issue list"), "{error:#}");
+    let _ = std::fs::remove_dir_all(root);
+}

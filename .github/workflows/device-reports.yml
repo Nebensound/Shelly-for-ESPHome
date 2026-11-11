@@ -9,7 +9,9 @@ name: Device reports
 # - reject: no pull request; a comment names the problems, and the check runs
 #   again when the author edits the issue;
 # - failure: a report of a failed run (form device-failure.yml carries the
-#   same label); it stays open as a bug and is left alone here.
+#   same label); it stays open as a bug, unless an older open report names
+#   the same model and failure kind: then its fields are added there and it
+#   is closed as a duplicate.
 # Nothing from the issue reaches a shell: the task reads the event file itself,
 # and the steps below use only the issue number, the author's login (passed
 # through the environment) and the task's decision. Two jobs: cargo runs
@@ -76,6 +78,9 @@ jobs:
           # deleted release.
           gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' \
             > "$RUNNER_TEMP/releases.txt"
+          # To find the original of a duplicate failure report.
+          gh issue list --label device-report --state open --limit 1000 --json number,body \
+            > "$RUNNER_TEMP/open.json"
       # No token in cargo's environment.
       - name: Check the report
         env:
@@ -90,6 +95,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/intake"
           cargo xtask report-intake --event "$GITHUB_EVENT_PATH" \
             --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" \
+            --open-issues "$RUNNER_TEMP/open.json" \
             > "$RUNNER_TEMP/intake/decision.json"
           cat "$RUNNER_TEMP/intake/decision.json"
           file="docs/device-reports/$ISSUE.json"
@@ -134,7 +140,20 @@ jobs:
               test "$(jq -r .file "$decision")" = "$file"
               mkdir -p docs/device-reports
               cp "$RUNNER_TEMP/intake/report.json" "$file" ;;
-            reject | failure) ;;
+            reject) ;;
+            failure)
+              original="$(jq -r '.duplicate.original // empty' "$decision")"
+              if [ -n "$original" ]; then
+                [[ $original =~ ^[0-9]+$ ]]
+                # Only table rows of field IDs and values of the report formats.
+                jq -r .duplicate.fields "$decision" > "$RUNNER_TEMP/fields.md"
+                rows='^\| [A-Za-z-]+ \| [A-Za-z0-9 ._:/@+-]+ \|$'
+                if [ -n "$(grep -vE -e "$rows" -e '^\|---\|---\|$' "$RUNNER_TEMP/fields.md" || true)" ]; then
+                  echo "::error::unexpected fields table"
+                  exit 1
+                fi
+                echo "original=$original" >> "$GITHUB_OUTPUT"
+              fi ;;
             *) echo "::error::unknown verdict"; exit 1 ;;
           esac
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
@@ -249,7 +268,29 @@ jobs:
           if [ -n "$pr" ]; then
             gh pr close "$pr" --delete-branch --comment "The report of #$ISSUE no longer passes the check."
           fi
-      # A failure report stays open as a bug; it gets no comment here.
+      # One issue per failure: a report of the same model and failure kind as
+      # an older open one adds its fields there and is closed as a duplicate.
+      - name: Link a duplicate failure report
+        if: steps.intake.outputs.verdict == 'failure' && steps.intake.outputs.original != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL: ${{ steps.intake.outputs.original }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Another report of this failure: #$ISSUE"
+            echo
+            cat "$RUNNER_TEMP/fields.md"
+          } > "$RUNNER_TEMP/original.md"
+          gh issue comment "$ORIGINAL" --body-file "$RUNNER_TEMP/original.md"
+          {
+            echo "Duplicate of #$ORIGINAL"
+            echo
+            echo "Thanks for the report! The same model already fails the same way in #$ORIGINAL;"
+            echo "your report's details were added there. Please follow that issue."
+          } > "$RUNNER_TEMP/duplicate.md"
+          gh issue close "$ISSUE" --reason "not planned" --comment "$(cat "$RUNNER_TEMP/duplicate.md")"
+      # Any other failure report stays open as a bug; it gets no comment here.
       - name: Tell the author
         if: steps.intake.outputs.verdict != 'failure'
         env:

@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 
+use crate::failure::{self, Duplicate, OpenIssue};
 use anyhow::{Context, bail};
 use serde::Serialize;
 use serde_json::Value;
@@ -66,7 +67,7 @@ fn form_fields() -> Vec<(&'static str, &'static str)> {
 
 /// The answers of an issue form body by field ID. GitHub writes every field as
 /// `### <label>`, a blank line and the value.
-fn answers(body: &str) -> Vec<(&'static str, String)> {
+pub(crate) fn answers(body: &str) -> Vec<(&'static str, String)> {
     let fields = form_fields();
     body.split("### ")
         .skip(1)
@@ -156,14 +157,27 @@ impl Submission {
         Ok(submission)
     }
 
-    fn get(&self, id: &str) -> &str {
+    /// The value of the coded field `id`; empty for an unknown ID.
+    #[must_use]
+    pub fn get(&self, id: &str) -> &str {
         self.fields.iter().find(|(known, _)| *known == id).map_or("", |(_, value)| value)
     }
 
-    /// The problems that refuse the report: a code that does not match the
-    /// fields, or a value the tool would never write.
+    /// The problems that refuse the report of a successful run: a code that
+    /// does not match the fields, or a value the tool would never write.
     #[must_use]
     pub fn problems(&self) -> Vec<String> {
+        self.problems_with(|value| value == SUCCESS)
+    }
+
+    /// The problems of a report of a failed run, see [`Self::problems`]; its
+    /// result must be a failure kind (`FlashError::report_kind`).
+    #[must_use]
+    pub fn failure_problems(&self) -> Vec<String> {
+        self.problems_with(is_failure_kind)
+    }
+
+    fn problems_with(&self, result: Check) -> Vec<String> {
         let mut problems = Vec::new();
         if Report::code(&self.fields) != self.code {
             problems.push(
@@ -173,7 +187,7 @@ impl Submission {
             );
         }
         let checks: [(&str, Check); 11] = [
-            ("result", |value| value == SUCCESS),
+            ("result", result),
             ("model", |value| Model::from_device_type(value).is_some()),
             ("generation", |value| value == "Gen1"),
             ("stock-firmware", |value| value == "unknown" || report::is_stock_build(value)),
@@ -247,6 +261,21 @@ impl Submission {
 
 /// A rule for the value of one field.
 type Check = fn(&str) -> bool;
+
+/// A failure kind as `FlashError::report_kind` writes it: lowercase words
+/// joined by `-`, optionally `:` and the device's reason (`device-failed:
+/// hash_mismatch`, `device-failed:http_404`).
+fn is_failure_kind(value: &str) -> bool {
+    let (kind, reason) = value.split_once(':').unwrap_or((value, "x"));
+    value != SUCCESS
+        && kind
+            .split('-')
+            .all(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_lowercase()))
+        && !reason.is_empty()
+        && reason
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
 
 fn is_yes_no(value: &str) -> bool {
     ["yes", "no", "unknown"].contains(&value)
@@ -330,29 +359,52 @@ pub struct Decision {
     pub reasons: Vec<String>,
     /// The report file below the repository root, unless refused.
     pub file: Option<PathBuf>,
+    /// For a [`Verdict::Failure`]: the older report it duplicates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<Duplicate>,
 }
 
 /// Decides about the issue `issue` with `body` and writes its report file
 /// below `root` unless it is refused. A report of a failed run (any result
-/// but `success`) is left alone: it is no candidate for the device table.
+/// but `success`) is no candidate for the device table; for it, the decision
+/// names an older `open` report of the same failure it duplicates.
 ///
 /// # Errors
 ///
 /// When the report file cannot be written.
-pub fn intake(issue: u64, body: &str, author: &Author, root: &Path) -> anyhow::Result<Decision> {
+pub fn intake(
+    issue: u64,
+    body: &str,
+    author: &Author,
+    open: &[OpenIssue],
+    root: &Path,
+) -> anyhow::Result<Decision> {
     let failed = answers(body).iter().any(|(id, value)| {
         *id == "result" && !value.is_empty() && value != NO_RESPONSE && value != SUCCESS
     });
     if failed {
-        return Ok(Decision { verdict: Verdict::Failure, reasons: Vec::new(), file: None });
+        let duplicate = failure::find_original(issue, body, open);
+        return Ok(Decision {
+            verdict: Verdict::Failure,
+            reasons: Vec::new(),
+            file: None,
+            duplicate,
+        });
     }
     let submission = match Submission::from_issue(issue, body) {
         Ok(submission) => submission,
-        Err(reasons) => return Ok(Decision { verdict: Verdict::Reject, reasons, file: None }),
+        Err(reasons) => {
+            return Ok(Decision { verdict: Verdict::Reject, reasons, file: None, duplicate: None });
+        }
     };
     let problems = submission.problems();
     if !problems.is_empty() {
-        return Ok(Decision { verdict: Verdict::Reject, reasons: problems, file: None });
+        return Ok(Decision {
+            verdict: Verdict::Reject,
+            reasons: problems,
+            file: None,
+            duplicate: None,
+        });
     }
     let path = submission.path();
     let target = root.join(&path);
@@ -361,7 +413,7 @@ pub fn intake(issue: u64, body: &str, author: &Author, root: &Path) -> anyhow::R
         .with_context(|| format!("writing {}", target.display()))?;
     let reasons = submission.doubts(author);
     let verdict = if reasons.is_empty() { Verdict::Accept } else { Verdict::Review };
-    Ok(Decision { verdict, reasons, file: Some(path) })
+    Ok(Decision { verdict, reasons, file: Some(path), duplicate: None })
 }
 
 /// Checks every report file below `root`: its name is its issue number and
