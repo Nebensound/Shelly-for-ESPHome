@@ -39,3 +39,69 @@ fn reports_when_no_local_address_can_reach_the_target() {
     // Linux refuses to connect a UDP socket to the broadcast address.
     assert!(local_ip_towards(IpAddr::from([255, 255, 255, 255])).is_err());
 }
+
+#[tokio::test]
+async fn names_every_failure_for_device_reports() {
+    let http = crate::http::builder()
+        .build()
+        .expect("client")
+        .get("no url")
+        .send()
+        .await
+        .expect_err("no url");
+    let model: ModelId = serde_json::from_str("\"S3SW-001X16EU\"").expect("model");
+    let generation = Generation::try_from(3).expect("generation");
+    let refusals = [
+        FlashError::Device(DeviceError::AuthRequired),
+        // The login is missing only for the settings the backup reads.
+        FlashError::Backup(BackupError::Device(DeviceError::AuthRequired)),
+        // A package for another model, refused before the confirmation.
+        FlashError::Package(PackageError::WrongModel {
+            expected: "ShellyDimmer2",
+            found: "Shelly1".into(),
+        }),
+        FlashError::UnsupportedModel("SHXX-1".into()),
+        FlashError::UnsupportedGeneration { model, generation },
+        FlashError::WeakSignal { rssi_dbm: -90, min_rssi_dbm: -75 },
+        FlashError::PackageRequired("mg2esphome-Shelly1.zip".into()),
+        FlashError::Aborted,
+        FlashError::Busy(MigrationState::Downloading),
+        FlashError::ImageTooLarge { size: 2, max_size: 1 },
+    ];
+    for refusal in refusals {
+        assert_eq!(refusal.report_kind(), None, "{refusal}");
+    }
+    let failures = [
+        (FlashError::Device(DeviceError::Http(http)), "device-unreachable"),
+        (
+            FlashError::Device(DeviceError::Status { endpoint: "/x", status: 500 }),
+            "device-http-status",
+        ),
+        (FlashError::Device(DeviceError::Rejected("no".into())), "migration-rejected"),
+        (FlashError::Device(DeviceError::UnknownFirmware), "unknown-firmware"),
+        (FlashError::Device(DeviceError::UnsupportedProtocol(9)), "protocol-mismatch"),
+        (FlashError::Package(PackageError::MissingManifest), "package-invalid"),
+        (FlashError::Backup(BackupError::NotStock), "backup-failed"),
+        (FlashError::Io(std::io::Error::other("no route")), "local-network"),
+        (FlashError::PackageNotFetched("10.0.0.2:8080".into()), "package-not-fetched"),
+        (FlashError::MigrationNotReachable, "migration-not-reachable"),
+        (FlashError::RelocationFailed("flash".into()), "relocation-failed"),
+        (FlashError::DeviceFailed("hash_mismatch".into()), "device-failed:hash_mismatch"),
+        (FlashError::DeviceFailed("http_404".into()), "device-failed:http_404"),
+        // Anything the firmware does not set becomes "other": it could be a
+        // MAC, a name or an address.
+        (FlashError::DeviceFailed("aabbccddeeff".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("my-kitchen-light".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("bad 10.0.0.2".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("http_4040".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("http_abc".into()), "device-failed:other"),
+        (FlashError::DeviceFailed(String::new()), "device-failed:other"),
+        (FlashError::StagingSlotTooSmall { size: 2, max_size: 1 }, "staging-slot-too-small"),
+        (FlashError::InstallFatal, "install-fatal"),
+        (FlashError::FlashTimeout, "flash-timeout"),
+        (FlashError::EsphomeNotSeen("10.0.0.2:6053".parse().expect("addr")), "esphome-not-seen"),
+    ];
+    for (failure, kind) in failures {
+        assert_eq!(failure.report_kind().as_deref(), Some(kind), "{failure}");
+    }
+}

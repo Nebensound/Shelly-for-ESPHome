@@ -29,6 +29,7 @@ fn progress_is_not_repeated_after_a_message() {
         assume_yes: true,
         last_percent: None,
         progress_open: false,
+        facts: DeviceFacts::default(),
     };
     console.progress(50, 100);
     console.progress(100, 100);

@@ -69,6 +69,11 @@ live here were removed on purpose; do not reintroduce them.
   - `rpc.rs` holds what Gen2+ devices report about themselves (generation,
     model ID, app name, firmware version, Wi-Fi). Gen2+ devices are only read
     so far; `flash` refuses them before any change.
+  - `report.rs` builds the device report link `flash` prints: a prefilled
+    issue form (`.github/ISSUE_TEMPLATE/device-report.yml` after a success,
+    `device-failure.yml` after a failure). `flash` hands what it learned to
+    the reporter (`Reporter::learned`); `FlashError::report_kind` names each
+    failure with a fixed kind.
   - `server.rs` is the local file server.
   - `flash.rs` holds the procedure and its safety checks.
   - `cli.rs` is the console UI (arguments, output, prompts); `main.rs` only
@@ -121,6 +126,10 @@ live here were removed on purpose; do not reintroduce them.
 7. TLS verification is never switched off. Shelly's servers are trusted only
    through the pinned root in `shelly_tls`; a change of that root comes with
    its new SHA-256 and the source it was taken from.
+8. A device report never carries an address, MAC, device or network name,
+   credentials or free text from an error. Its field IDs, the result kinds
+   and the report code are the contract with the issue forms and the report
+   workflow; `tests/report_forms.rs` checks the forms.
 
 ## Conventions
 
