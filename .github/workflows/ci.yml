@@ -46,6 +46,10 @@ jobs:
   # dispatch with a title) the job commits the version to the branch; everywhere
   # else crates/shelly2esphome/Cargo.toml must already carry it. A version
   # raised by hand is kept if it is higher.
+  # Device reports (docs/device-reports/) are data, not a change of the tool:
+  # a pull request that only adds reports keeps its version, and such a commit
+  # on main is not released again. The device table in the README that is
+  # built from them is a normal change with a new version.
   version:
     name: Version
     runs-on: ubuntu-latest
@@ -54,6 +58,8 @@ jobs:
       actions: write
     outputs:
       version: ${{ steps.effective.outputs.version }}
+      # false for a commit on main that only adds device reports.
+      release: ${{ steps.effective.outputs.release }}
     steps:
       # On pull requests this is the merge with main, so the latest release tag
       # is reachable even if the branch is older than it.
@@ -90,6 +96,13 @@ jobs:
               *) echo "$major.$minor.$((patch + 1))" ;;
             esac
           }
+          # Whether the change between the given revisions touches nothing but
+          # device reports.
+          reports_only() {
+            local files
+            files="$(git diff --name-only "$@")"
+            [ -n "$files" ] && [ -z "$(grep -v '^docs/device-reports/' <<< "$files" || true)" ]
+          }
           manifest="$(version_of < crates/shelly2esphome/Cargo.toml)"
           title_bump="patch"
           if [[ $TITLE =~ ^[a-z]+(\([^\)]*\))?!: ]]; then
@@ -107,7 +120,22 @@ jobs:
               echo "version=$manifest" >> "$GITHUB_OUTPUT"
               exit 0
             fi
+            # Squash merges give every commit on main one parent.
+            if reports_only HEAD^ HEAD; then
+              echo "only device reports changed; v$manifest is not released again"
+              echo "version=$manifest" >> "$GITHUB_OUTPUT"
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           else
+            # Three dots: the changes of the branch since it left main. The
+            # branch keeps the version it carries; a squash merge keeps the
+            # one on main anyway.
+            if reports_only "origin/$DEFAULT_BRANCH...HEAD"; then
+              echo "only device reports changed; the version stays $manifest"
+              echo "version=$manifest" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             on_main="$(git show "origin/$DEFAULT_BRANCH:crates/shelly2esphome/Cargo.toml" | version_of)"
             # Once main releases by itself, the version it carries is taken.
             if git show "origin/$DEFAULT_BRANCH:.github/workflows/ci.yml" | grep -qx '  version:'; then
@@ -508,7 +536,9 @@ jobs:
     # job has checked that the commit carries that version. Both steps skip
     # what already exists for this commit, so a failed release can simply be
     # re-run; a tag of this version on another commit fails the release.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+      && needs.version.outputs.release != 'false'
     needs: [version, ci-passed]
     runs-on: ubuntu-latest
     permissions:
