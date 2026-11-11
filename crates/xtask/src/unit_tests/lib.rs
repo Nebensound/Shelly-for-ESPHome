@@ -144,7 +144,8 @@ fn names_the_original_of_a_duplicate_failure() {
     let intake = |list: &str| {
         let root = root.to_str().expect("UTF-8");
         let args = ["report-intake", "--event", &path, "--account-age-days", "400"];
-        let more = ["--recent-reports", "1", "--open-issues", list, "--root", root];
+        let more =
+            ["--recent-reports", "1", "--form", "failure", "--open-issues", list, "--root", root];
         run_with(&[&args[..], &more[..]].concat())
     };
     let (result, out) = intake(list.to_str().expect("UTF-8"));

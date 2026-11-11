@@ -8,10 +8,12 @@ name: Device reports
 # - review: the pull request waits for a maintainer, who sees why;
 # - reject: no pull request; a comment names the problems, and the check runs
 #   again when the author edits the issue;
-# - failure: a report of a failed run (form device-failure.yml carries the
-#   same label); it stays open as a bug, unless an older open report names
-#   the same model and failure kind: then its fields are added there and it
-#   is closed as a duplicate.
+# - failure: a report of a failed run (form device-failure.yml, label
+#   device-failure); it stays open as a bug, unless an older open report
+#   names the same model and failure kind: then its fields are added there
+#   and it is closed as a duplicate.
+# The label of the form decides how a report is checked; a pull request of a
+# report that is no longer a valid success report is closed.
 # Nothing from the issue reaches a shell: the task reads the event file itself,
 # and the steps below use only the issue number, the author's login (passed
 # through the environment) and the task's decision. Two jobs: cargo runs
@@ -36,7 +38,8 @@ jobs:
     name: Check the report
     if: >-
       github.event.issue.state == 'open'
-      && contains(github.event.issue.labels.*.name, 'device-report')
+      && (contains(github.event.issue.labels.*.name, 'device-report')
+      || contains(github.event.issue.labels.*.name, 'device-failure'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -79,13 +82,17 @@ jobs:
           gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' \
             > "$RUNNER_TEMP/releases.txt"
           # To find the original of a duplicate failure report.
-          gh issue list --label device-report --state open --limit 1000 --json number,body \
+          gh issue list --label device-failure --state open --limit 1000 --json number,body \
             > "$RUNNER_TEMP/open.json"
       # No token in cargo's environment.
       - name: Check the report
         env:
           AGE: ${{ steps.author.outputs.age }}
           RECENT: ${{ steps.author.outputs.recent }}
+          # The form decides how the report is checked, not its result value:
+          # a typo in a success report is refused with a reason.
+          FORM: >-
+            ${{ contains(github.event.issue.labels.*.name, 'device-failure') && 'failure' || 'success' }}
         run: |
           set -euo pipefail
           released=()
@@ -93,7 +100,7 @@ jobs:
             released+=(--released "${tag#v}")
           done < "$RUNNER_TEMP/releases.txt"
           mkdir -p "$RUNNER_TEMP/intake"
-          cargo xtask report-intake --event "$GITHUB_EVENT_PATH" \
+          cargo xtask report-intake --event "$GITHUB_EVENT_PATH" --form "$FORM" \
             --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" \
             --open-issues "$RUNNER_TEMP/open.json" \
             > "$RUNNER_TEMP/intake/decision.json"
@@ -152,6 +159,11 @@ jobs:
                   echo "::error::unexpected fields table"
                   exit 1
                 fi
+                # Values as code: an @ in them mentions no one.
+                # shellcheck disable=SC2016 # the backticks are Markdown
+                sed -E '3,$ s/^\| ([A-Za-z-]+) \| (.+) \|$/| \1 | `\2` |/' "$RUNNER_TEMP/fields.md" \
+                  > "$RUNNER_TEMP/fields-code.md"
+                mv "$RUNNER_TEMP/fields-code.md" "$RUNNER_TEMP/fields.md"
                 echo "original=$original" >> "$GITHUB_OUTPUT"
               fi ;;
             *) echo "::error::unknown verdict"; exit 1 ;;
@@ -251,7 +263,7 @@ jobs:
           echo "number=$pr" >> "$GITHUB_OUTPUT"
       # A report that passed before and no longer does after an edit.
       - name: Close the pull request of a refused report
-        if: steps.intake.outputs.verdict == 'reject'
+        if: steps.intake.outputs.verdict == 'reject' || steps.intake.outputs.verdict == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -266,7 +278,7 @@ jobs:
           }
           pr="$(report_pr "device-report/$ISSUE")"
           if [ -n "$pr" ]; then
-            gh pr close "$pr" --delete-branch --comment "The report of #$ISSUE no longer passes the check."
+            gh pr close "$pr" --delete-branch --comment "The report of #$ISSUE is no longer a valid success report."
           fi
       # One issue per failure: a report of the same model and failure kind as
       # an older open one adds its fields there and is closed as a duplicate.
@@ -277,6 +289,14 @@ jobs:
           ORIGINAL: ${{ steps.intake.outputs.original }}
         run: |
           set -euo pipefail
+          # The number comes from the job that ran cargo: it must be an older,
+          # open failure report.
+          state="$(gh issue view "$ORIGINAL" --json state,labels \
+            --jq '"\(.state) \([.labels[].name] | index("device-failure") != null)"')"
+          if [ "$state" != "OPEN true" ] || [ "$ORIGINAL" -ge "$ISSUE" ]; then
+            echo "::error::#$ORIGINAL is no older open failure report"
+            exit 1
+          fi
           {
             echo "Another report of this failure: #$ISSUE"
             echo

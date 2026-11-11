@@ -12,7 +12,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-use crate::intake::Author;
+use crate::intake::{Author, Form};
 
 /// Repository tasks for CI.
 #[derive(Debug, Parser)]
@@ -31,6 +31,9 @@ enum Task {
         /// `GITHUB_EVENT_PATH`.
         #[arg(long)]
         event: PathBuf,
+        /// The issue form the report was submitted with.
+        #[arg(long, value_enum, default_value = "success")]
+        form: Form,
         /// Days since the author's account was created.
         #[arg(long)]
         account_age_days: u32,
@@ -74,6 +77,7 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> anyhow::Result<()> {
     let output = match Cli::try_parse_from(args)?.task {
         Task::ReportIntake {
             event,
+            form,
             account_age_days,
             recent_reports,
             released,
@@ -96,7 +100,7 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> anyhow::Result<()> {
                 }
                 None => Vec::new(),
             };
-            let decision = intake::intake(issue, body, &author, &open, &root)?;
+            let decision = intake::intake(issue, body, form, &author, &open, &root)?;
             // Strings, a path and a unit enum always serialize.
             serde_json::to_string(&decision).unwrap_or_default()
         }

@@ -81,13 +81,24 @@ jobs:
           name: table
           path: ${{ runner.temp }}/table
       # The README comes from a job that ran third-party code: it is taken
-      # over only if nothing outside the markers changed.
+      # over only if nothing outside the markers changed and every line
+      # between them is a row of the table.
       - name: Take over the table
         run: |
           set -euo pipefail
+          table="$RUNNER_TEMP/table/README.md"
           outside() { sed '/<!-- device-table:start -->/,/<!-- device-table:end -->/d' "$1"; }
-          if ! diff <(outside README.md) <(outside "$RUNNER_TEMP/table/README.md") > /dev/null; then
+          if ! diff <(outside README.md) <(outside "$table") > /dev/null; then
             echo "::error::the build changed README.md outside the device table"
+            exit 1
+          fi
+          inside="$(sed -n '/<!-- device-table:start -->/,/<!-- device-table:end -->/p' "$table" | sed '1d;$d')"
+          # shellcheck disable=SC2016 # the backticks are Markdown
+          row='^\| [A-Za-z0-9]+ \(`[A-Z0-9-]+`\) \| [A-Za-z0-9., -]+ \|$'
+          other="$(grep -vE -e "$row" -e '^\| Model \| Stock firmware \|$' -e '^\|---\|---\|$' \
+            -e '^No device reports yet\.$' <<< "$inside" || true)"
+          if [ -n "$other" ]; then
+            echo "::error::unexpected lines in the device table"
             exit 1
           fi
           cp "$RUNNER_TEMP/table/README.md" README.md

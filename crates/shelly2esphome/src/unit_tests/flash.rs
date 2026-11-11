@@ -101,7 +101,27 @@ async fn names_every_failure_for_device_reports() {
         (FlashError::FlashTimeout, "flash-timeout"),
         (FlashError::EsphomeNotSeen("10.0.0.2:6053".parse().expect("addr")), "esphome-not-seen"),
     ];
-    for (failure, kind) in failures {
-        assert_eq!(failure.report_kind().as_deref(), Some(kind), "{failure}");
+    for (failure, kind) in &failures {
+        assert_eq!(failure.report_kind().as_deref(), Some(*kind), "{failure}");
+        assert!(is_report_kind(kind), "{kind}");
+    }
+    // Every listed kind is one a failure names.
+    for kind in REPORT_KINDS {
+        assert!(failures.iter().any(|(_, named)| *named == kind), "{kind}");
+    }
+}
+
+#[test]
+fn knows_only_the_kinds_it_names() {
+    for text in [
+        "success",
+        "foo-bar",
+        "Device-unreachable",
+        "device-failed:",
+        "device-failed:anything",
+        "device-failed:http_40",
+        "device-failed:hash_mismatch ",
+    ] {
+        assert!(!is_report_kind(text), "{text}");
     }
 }

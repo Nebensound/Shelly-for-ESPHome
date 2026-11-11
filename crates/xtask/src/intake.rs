@@ -20,6 +20,7 @@ use anyhow::{Context, bail};
 use serde::Serialize;
 use serde_json::Value;
 use shelly2esphome::{
+    flash,
     model::Model,
     report::{self, DeviceFacts, Report, SUCCESS},
 };
@@ -67,7 +68,7 @@ fn form_fields() -> Vec<(&'static str, &'static str)> {
 
 /// The answers of an issue form body by field ID. GitHub writes every field as
 /// `### <label>`, a blank line and the value.
-pub(crate) fn answers(body: &str) -> Vec<(&'static str, String)> {
+fn answers(body: &str) -> Vec<(&'static str, String)> {
     let fields = form_fields();
     body.split("### ")
         .skip(1)
@@ -171,10 +172,10 @@ impl Submission {
     }
 
     /// The problems of a report of a failed run, see [`Self::problems`]; its
-    /// result must be a failure kind (`FlashError::report_kind`).
+    /// result must be a kind `FlashError::report_kind` names.
     #[must_use]
     pub fn failure_problems(&self) -> Vec<String> {
-        self.problems_with(is_failure_kind)
+        self.problems_with(flash::is_report_kind)
     }
 
     fn problems_with(&self, result: Check) -> Vec<String> {
@@ -262,21 +263,6 @@ impl Submission {
 /// A rule for the value of one field.
 type Check = fn(&str) -> bool;
 
-/// A failure kind as `FlashError::report_kind` writes it: lowercase words
-/// joined by `-`, optionally `:` and the device's reason (`device-failed:
-/// hash_mismatch`, `device-failed:http_404`).
-fn is_failure_kind(value: &str) -> bool {
-    let (kind, reason) = value.split_once(':').unwrap_or((value, "x"));
-    value != SUCCESS
-        && kind
-            .split('-')
-            .all(|word| !word.is_empty() && word.bytes().all(|byte| byte.is_ascii_lowercase()))
-        && !reason.is_empty()
-        && reason
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
-}
-
 fn is_yes_no(value: &str) -> bool {
     ["yes", "no", "unknown"].contains(&value)
 }
@@ -335,6 +321,16 @@ pub struct Author {
     pub released: Vec<String>,
 }
 
+/// The issue form a report was submitted with; the workflow knows it from
+/// the issue's label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Form {
+    /// `device-report.yml`, a successful run.
+    Success,
+    /// `device-failure.yml`, a failed run.
+    Failure,
+}
+
 /// What happens to a report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -345,8 +341,8 @@ pub enum Verdict {
     Review,
     /// Not added; the author can fix the issue.
     Reject,
-    /// A report of a failed run (form `device-failure.yml`, which carries
-    /// the same label): it stays open as a bug and is not added.
+    /// A report of a failed run (form `device-failure.yml`): it stays open as
+    /// a bug, unless it duplicates an older one.
     Failure,
 }
 
@@ -364,10 +360,10 @@ pub struct Decision {
     pub duplicate: Option<Duplicate>,
 }
 
-/// Decides about the issue `issue` with `body` and writes its report file
-/// below `root` unless it is refused. A report of a failed run (any result
-/// but `success`) is no candidate for the device table; for it, the decision
-/// names an older `open` report of the same failure it duplicates.
+/// Decides about the issue `issue` with `body` from `form` and writes its
+/// report file below `root` unless it is refused. A report of a failed run is
+/// no candidate for the device table; for it, the decision names an older
+/// `open` report of the same failure it duplicates.
 ///
 /// # Errors
 ///
@@ -375,14 +371,12 @@ pub struct Decision {
 pub fn intake(
     issue: u64,
     body: &str,
+    form: Form,
     author: &Author,
     open: &[OpenIssue],
     root: &Path,
 ) -> anyhow::Result<Decision> {
-    let failed = answers(body).iter().any(|(id, value)| {
-        *id == "result" && !value.is_empty() && value != NO_RESPONSE && value != SUCCESS
-    });
-    if failed {
+    if form == Form::Failure {
         let duplicate = failure::find_original(issue, body, open);
         return Ok(Decision {
             verdict: Verdict::Failure,

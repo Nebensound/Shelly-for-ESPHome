@@ -222,7 +222,7 @@ fn writes_one_field_per_line() {
 #[test]
 fn takes_a_report_in() {
     let root = scratch("intake");
-    let decision = intake(12, &body(), &trusted(), &[], &root).expect("written");
+    let decision = intake(12, &body(), Form::Success, &trusted(), &[], &root).expect("written");
     assert_eq!(
         decision,
         Decision {
@@ -235,38 +235,48 @@ fn takes_a_report_in() {
     let written = std::fs::read_to_string(root.join("docs/device-reports/12.json")).expect("file");
     assert_eq!(written, submission(&coded_with("", "")).file_text());
 
-    let review = intake(13, &body(), &Author { account_age_days: 1, ..trusted() }, &[], &root)
-        .expect("written");
+    let review = intake(
+        13,
+        &body(),
+        Form::Success,
+        &Author { account_age_days: 1, ..trusted() },
+        &[],
+        &root,
+    )
+    .expect("written");
     assert_eq!(review.verdict, Verdict::Review);
     assert_eq!(review.reasons.len(), 1);
     assert_eq!(check_reports(&root).expect("valid"), 2);
 
     let mut edited = coded_with("", "");
     edited[4].1 = "-40 dBm".into();
-    let refused = intake(14, &body_of(&edited), &trusted(), &[], &root).expect("decided");
+    let refused =
+        intake(14, &body_of(&edited), Form::Success, &trusted(), &[], &root).expect("decided");
     assert_eq!((refused.verdict, refused.file), (Verdict::Reject, None));
-    let incomplete = intake(15, "", &trusted(), &[], &root).expect("decided");
+    let incomplete = intake(15, "", Form::Success, &trusted(), &[], &root).expect("decided");
     assert_eq!((incomplete.verdict, incomplete.reasons.len()), (Verdict::Reject, 12));
     assert!(!root.join("docs/device-reports/14.json").exists());
 
-    // The failure form carries the same label; such a report is left alone.
+    // A report from the failure form is no candidate for the table.
     let failed = coded_with("result", "device-failed:hash_mismatch");
-    let failure = intake(17, &body_of(&failed), &trusted(), &[], &root).expect("decided");
+    let failure = intake(17, &body_of(&failed), Form::Failure, &trusted(), &[], &root);
     assert_eq!(
-        failure,
+        failure.expect("decided"),
         Decision { verdict: Verdict::Failure, reasons: vec![], file: None, duplicate: None }
     );
-    // An emptied result is a missing field, not a failure.
-    for empty in ["", NO_RESPONSE] {
-        let emptied = coded_with("result", empty);
-        let refused = intake(18, &body_of(&emptied), &trusted(), &[], &root).expect("decided");
-        assert_eq!(refused.verdict, Verdict::Reject, "{empty:?}");
+    // In the success form, any other result is refused with a reason, even a
+    // failure kind or a typo.
+    for result in ["device-failed:hash_mismatch", "Success", "succes", "", NO_RESPONSE] {
+        let changed = coded_with("result", result);
+        let refused = intake(18, &body_of(&changed), Form::Success, &trusted(), &[], &root);
+        assert_eq!(refused.expect("decided").verdict, Verdict::Reject, "{result:?}");
     }
     assert!(!root.join("docs/device-reports/17.json").exists());
 
     let file = root.join("a-file");
     std::fs::write(&file, "").expect("file");
-    let error = intake(16, &body(), &trusted(), &[], &file).expect_err("not a directory");
+    let error =
+        intake(16, &body(), Form::Success, &trusted(), &[], &file).expect_err("not a directory");
     assert!(format!("{error:#}").starts_with("writing "), "{error:#}");
     let _ = std::fs::remove_dir_all(root);
 }
@@ -329,26 +339,10 @@ fn checks_every_report_file() {
 }
 
 #[test]
-fn knows_the_failure_kinds_of_the_tool() {
-    for kind in [
-        "device-unreachable",
-        "flash-timeout",
-        "device-failed:hash_mismatch",
-        "device-failed:http_404",
-    ] {
-        assert!(is_failure_kind(kind), "{kind}");
-    }
-    for text in [
-        "success",
-        "Device-failed",
-        "device--failed",
-        "-failed",
-        "device-failed:",
-        "device-failed:Hash",
-        "device-failed:hash mismatch",
-        "my kitchen",
-    ] {
-        assert!(!is_failure_kind(text), "{text}");
+fn checks_failure_reports_with_the_kinds_of_the_tool() {
+    for kind in ["foo-bar", "device-failed:anything", "Device-unreachable"] {
+        let refused = submission(&coded_with("result", kind));
+        assert_eq!(refused.failure_problems().len(), 1, "{kind}");
     }
     let failed = submission(&coded_with("result", "device-failed:hash_mismatch"));
     assert_eq!(failed.failure_problems(), Vec::<String>::new());

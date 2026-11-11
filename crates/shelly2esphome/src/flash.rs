@@ -260,12 +260,50 @@ pub const DEVICE_ERROR_REASONS: [&str; 19] = [
     "url_scheme",
 ];
 
-/// `error` if it is a known reason of the migration firmware, else `other`.
-fn error_token(error: &str) -> &str {
-    let http_status = error
+/// Whether `reason` is a known reason of the migration firmware or an HTTP
+/// status it reports (`http_404`).
+fn is_device_reason(reason: &str) -> bool {
+    let http_status = reason
         .strip_prefix("http_")
         .is_some_and(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
-    if http_status || DEVICE_ERROR_REASONS.contains(&error) { error } else { "other" }
+    http_status || DEVICE_ERROR_REASONS.contains(&reason)
+}
+
+/// `error` if it is a known reason of the migration firmware, else `other`.
+fn error_token(error: &str) -> &str {
+    if is_device_reason(error) { error } else { "other" }
+}
+
+/// The kinds [`FlashError::report_kind`] names besides
+/// `device-failed:<reason>`.
+pub const REPORT_KINDS: [&str; 15] = [
+    "device-unreachable",
+    "device-http-status",
+    "migration-rejected",
+    "unknown-firmware",
+    "protocol-mismatch",
+    "package-invalid",
+    "backup-failed",
+    "local-network",
+    "package-not-fetched",
+    "migration-not-reachable",
+    "relocation-failed",
+    "staging-slot-too-small",
+    "install-fatal",
+    "flash-timeout",
+    "esphome-not-seen",
+];
+
+/// Whether `text` is a kind [`FlashError::report_kind`] can name: one of
+/// [`REPORT_KINDS`], or `device-failed:` with a reason of the migration
+/// firmware, an HTTP status or `other`. The report workflow checks failure
+/// reports with it.
+#[must_use]
+pub fn is_report_kind(text: &str) -> bool {
+    REPORT_KINDS.contains(&text)
+        || text
+            .strip_prefix("device-failed:")
+            .is_some_and(|reason| reason == "other" || is_device_reason(reason))
 }
 
 impl FlashError {
