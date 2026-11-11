@@ -51,6 +51,10 @@ live here were removed on purpose; do not reintroduce them.
   - `backup.rs` saves the stock settings; `discover.rs` scans networks for
     `list`. Both only send reading requests.
   - `device.rs` holds the HTTP client for the stock and migration firmware.
+  - `esp32/` reads ESP32 images, ESP-IDF partition tables and the merged
+    factory image ESPHome builds; `stock_package.rs` reads the official Gen2+
+    update package (the manifest stays as JSON so unknown fields survive a
+    rebuild). Both work on bytes only.
   - `rpc.rs` holds what Gen2+ devices report about themselves (generation,
     model ID, app name, firmware version, Wi-Fi). Gen2+ devices are only read
     so far; `flash` refuses them before any change.
@@ -59,7 +63,7 @@ live here were removed on purpose; do not reintroduce them.
   - `cli.rs` is the console UI (arguments, output, prompts); `main.rs` only
     connects it to the process. Tests drive `cli::run` with their own
     writers and settings.
-  - Unit tests live in `src/unit_tests/<module>.rs` (included with
+  - Unit tests live in `src/unit_tests/<module path>.rs` (included with
     `#[path]`), integration tests in `tests/`; the simulated devices are in
     `tests/common/`. Neither counts as production code for coverage.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).

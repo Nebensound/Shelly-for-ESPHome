@@ -354,10 +354,11 @@ jobs:
           components: llvm-tools-preview
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage gate (100% regions, lines, functions of production code)
-        # Unit tests live in src/unit_tests/ and are not production code.
+        # Unit tests live in src/unit_tests/ and are not production code; modules in
+        # subdirectories include them as ../unit_tests/, hence no src/ in the pattern.
         run: >-
           cargo llvm-cov --workspace --all-features --locked --show-missing-lines
-          --ignore-filename-regex 'src/unit_tests/'
+          --ignore-filename-regex '/unit_tests/'
           --fail-under-regions 100 --fail-under-lines 100 --fail-under-functions 100
 
   crate:
