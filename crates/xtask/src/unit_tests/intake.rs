@@ -268,6 +268,12 @@ fn reads_only_complete_report_files() {
             text.replace("{\n", "{\n  \"name\": \"kitchen\",\n"),
             "unknown fields besides result, model",
         ),
+        // The parser keeps the last of repeated keys; the first must not hide.
+        (
+            text.replace("{\n", "{\n  \"model\": \"my kitchen\",\n"),
+            "not written as the intake writes it",
+        ),
+        (text.replace("\n  ", "\n    "), "not written as the intake writes it"),
     ] {
         let found = Submission::from_file(&broken).expect_err(error);
         assert!(format!("{found:#}").starts_with(error), "{found:#}");

@@ -132,7 +132,10 @@ impl Submission {
     /// # Errors
     ///
     /// When the file is no JSON object with exactly the issue, the coded
-    /// fields and the code, all of them strings except the issue number.
+    /// fields and the code, all of them strings except the issue number, or
+    /// when it is not written exactly as [`Self::file_text`] writes it. The
+    /// last rule refuses what the parsed value does not show: a repeated
+    /// key (the parser keeps only the last one), other spacing or order.
     pub fn from_file(text: &str) -> anyhow::Result<Self> {
         let value: Value = serde_json::from_str(text).context("not JSON")?;
         let object = value.as_object().context("not a JSON object")?;
@@ -146,6 +149,9 @@ impl Submission {
             .map_err(|problems| anyhow::anyhow!(problems.join(" ")))?;
         if values.len() != submission.fields.len() + 1 {
             bail!("unknown fields besides {}", field_ids().join(", "));
+        }
+        if submission.file_text() != text {
+            bail!("not written as the intake writes it (one field per line, in order, no repeats)");
         }
         Ok(submission)
     }
