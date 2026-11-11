@@ -1,0 +1,6 @@
+# Python tools for the migration firmware's checks, pinned so that CI and a
+# local run use the same versions (Dependabot keeps them current):
+#   pip install -r migration_firmware/requirements.txt
+clang-format==23.1.5  # formatting of src/ and test/
+gcovr==8.8            # coverage gate of the host tests (needs GCC's gcov)
+PyYAML==6.0.3         # CI: checks each built package against mos.yml

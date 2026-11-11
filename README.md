@@ -278,8 +278,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 
 # Migration firmware: host tests of the hardware-independent modules
+pip install -r migration_firmware/requirements.txt   # clang-format, gcovr (pinned)
+clang-format --dry-run --Werror migration_firmware/src/*.[ch] migration_firmware/test/*.c
 make -C migration_firmware/test check      # ASan/UBSan
-make -C migration_firmware/test coverage   # 100% gate, needs gcovr
+make -C migration_firmware/test coverage   # 100% gate (GCC's gcov; on macOS use CI)
 ```
 
 The migration firmware is built with
