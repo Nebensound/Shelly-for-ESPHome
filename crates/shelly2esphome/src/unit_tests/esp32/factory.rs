@@ -41,6 +41,11 @@ fn refuses_factory_images_that_do_not_suit_the_device() {
         error(&|fixture| fixture.bootloader[0] = 0),
         FactoryError::Bootloader { address: 0, source: ImageError::NotAnImage(0) }
     ));
+    // The OTA image instead of the factory image: an app at the bootloader address.
+    let app_first = image(ImageSpec { app: true, ..ImageSpec::default() });
+    let ota_image = error(&|fixture| fixture.bootloader = app_first.clone());
+    assert_eq!(ota_image, FactoryError::NotABootloader { address: 0 });
+    assert!(ota_image.to_string().contains("firmware.factory.bin"));
     assert!(matches!(
         error(&|fixture| fixture.table[0] = 0),
         FactoryError::PartitionTable { address: 0x8000, .. }

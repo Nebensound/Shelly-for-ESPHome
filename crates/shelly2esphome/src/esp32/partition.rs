@@ -24,13 +24,17 @@ pub struct Partition {
     pub offset: usize,
     /// Size in bytes.
     pub size: usize,
+    /// Flags (bit 0: encrypted, bit 1: read-only).
+    pub flags: u32,
 }
 
 impl std::fmt::Display for Partition {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let flags =
+            if self.flags == 0 { String::new() } else { format!(", flags {:#x}", self.flags) };
         write!(
             formatter,
-            "type {}/{:#04x} at {:#x}, {:#x} bytes",
+            "type {}/{:#04x} at {:#x}, {:#x} bytes{flags}",
             self.kind, self.subtype, self.offset, self.size
         )
     }
@@ -86,6 +90,7 @@ impl PartitionTable {
                     subtype: entry[3],
                     offset: le_usize([entry[4], entry[5], entry[6], entry[7]]),
                     size: le_usize([entry[8], entry[9], entry[10], entry[11]]),
+                    flags: u32::from_le_bytes([entry[28], entry[29], entry[30], entry[31]]),
                 }),
                 [0xEB, 0xEB] => {
                     let covered = limit.get(..index * ENTRY_LEN).unwrap_or_default();

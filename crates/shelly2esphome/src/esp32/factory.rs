@@ -27,6 +27,15 @@ pub enum FactoryError {
         /// Cause.
         source: ImageError,
     },
+    /// An application sits where the bootloader belongs: not a factory image.
+    #[error(
+        "{address:#x} holds an application, not a bootloader: pass ESPHome's \
+         firmware.factory.bin, not the OTA image"
+    )]
+    NotABootloader {
+        /// Flash address.
+        address: usize,
+    },
     /// No valid partition table at the package's table address.
     #[error(
         "no valid partition table at {address:#x} ({source}); build ESPHome with the device's \
@@ -104,6 +113,9 @@ impl FactoryImage {
         let at = |address: usize| bytes.get(address..).unwrap_or_default();
         let bootloader = Esp32Image::parse(at(bootloader_address))
             .map_err(|source| FactoryError::Bootloader { address: bootloader_address, source })?;
+        if bootloader.is_app {
+            return Err(FactoryError::NotABootloader { address: bootloader_address });
+        }
         let table = PartitionTable::parse(at(table_address))
             .map_err(|source| FactoryError::PartitionTable { address: table_address, source })?;
         let otadata = table

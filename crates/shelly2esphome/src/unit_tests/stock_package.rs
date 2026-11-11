@@ -1,7 +1,7 @@
 //! Unit tests of `crate::stock_package` (not counted as production code for coverage).
 
 use super::*;
-use crate::esp32::synthetic::{BOOT_ADDR, Fixture, TABLE_ADDR, zip_package};
+use crate::esp32::synthetic::{BOOT_ADDR, Fixture, ImageSpec, TABLE_ADDR, image, zip_package};
 
 #[test]
 fn reads_an_official_package() {
@@ -95,6 +95,32 @@ fn refuses_unusable_packages() {
         manifest["parts"][part].as_object_mut().expect("part").remove(field);
         assert!(refuse(&manifest, &files).contains(&format!("no usable {part} part")), "{part}");
     }
+
+    // A highly compressed part that unpacks beyond the budget.
+    let mut bomb_files = files.clone();
+    bomb_files[3].1 = vec![0; MAX_PACKAGE_BYTES];
+    let mut bomb = fixture.manifest();
+    bomb["parts"]["fs"]["size"] = MAX_PACKAGE_BYTES.into();
+    let packed = zip_package(&bomb, &bomb_files);
+    assert!(packed.len() < MAX_PACKAGE_BYTES / 100);
+    assert!(StockPackage::parse(&packed).expect_err("bomb").to_string().contains("larger than"));
+
+    // Images in the wrong role.
+    let app = image(ImageSpec { app: true, ..ImageSpec::default() });
+    let swapped = Fixture { stock_bootloader: app, ..Fixture::default() };
+    assert!(
+        StockPackage::parse(&swapped.package())
+            .expect_err("app as bootloader")
+            .to_string()
+            .contains("the boot part of the package holds the wrong kind of image")
+    );
+    let swapped = Fixture { stock_app: image(ImageSpec::default()), ..Fixture::default() };
+    assert!(
+        StockPackage::parse(&swapped.package())
+            .expect_err("bootloader as app")
+            .to_string()
+            .contains("the app part of the package holds the wrong kind of image")
+    );
 
     // Parts whose content is no image or table.
     let broken = |name: &'static str| {

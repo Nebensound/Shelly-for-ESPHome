@@ -19,7 +19,8 @@ use crate::{
     rpc::{AppName, FirmwareVersion},
 };
 
-/// Largest package this tool reads (the largest Gen2+ flash is 16 MB).
+/// Largest package this tool reads, packed and unpacked (the largest Gen2+
+/// flash is 16 MB).
 pub const MAX_PACKAGE_BYTES: usize = 16 * 1024 * 1024;
 
 /// One part as the manifest describes it.
@@ -51,7 +52,7 @@ struct Manifest {
 #[derive(Debug, thiserror::Error)]
 pub enum StockPackageError {
     /// The file is larger than any official package.
-    #[error("the package is larger than {MAX_PACKAGE_BYTES} bytes")]
+    #[error("the package is larger than {MAX_PACKAGE_BYTES} bytes (packed or unpacked)")]
     TooLarge,
     /// The file is no readable ZIP.
     #[error("the package is no readable ZIP: {0}")]
@@ -86,6 +87,10 @@ pub enum StockPackageError {
         /// Cause.
         source: ImageError,
     },
+    /// A part holds the wrong kind of image (an application as bootloader
+    /// or the other way round).
+    #[error("the {0} part of the package holds the wrong kind of image")]
+    WrongKind(&'static str),
     /// The partition table of the package is unusable.
     #[error("the partition table of the package: {0}")]
     PartitionTable(#[from] PartitionError),
@@ -105,14 +110,20 @@ pub struct StockPackage {
     app: Esp32Image,
 }
 
+/// Reads `name`, unpacking at most `budget` bytes; every file read counts
+/// against the same budget, so a highly compressed package cannot exhaust
+/// memory.
 fn read_file(
     archive: &mut zip::ZipArchive<std::io::Cursor<&[u8]>>,
     name: &str,
+    budget: &mut usize,
 ) -> Result<Vec<u8>, StockPackageError> {
     let error = |reason: String| StockPackageError::Read { name: name.to_owned(), reason };
-    let mut file = archive.by_name(name).map_err(|reason| error(reason.to_string()))?;
+    let file = archive.by_name(name).map_err(|reason| error(reason.to_string()))?;
     let mut data = Vec::new();
-    file.read_to_end(&mut data).map_err(|reason| error(reason.to_string()))?;
+    let limit = u64::try_from(*budget).unwrap_or(u64::MAX).saturating_add(1);
+    file.take(limit).read_to_end(&mut data).map_err(|reason| error(reason.to_string()))?;
+    *budget = budget.checked_sub(data.len()).ok_or(StockPackageError::TooLarge)?;
     Ok(data)
 }
 
@@ -127,7 +138,8 @@ impl StockPackage {
             return Err(StockPackageError::TooLarge);
         }
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
-        let manifest_bytes = read_file(&mut archive, "manifest.json")?;
+        let mut budget = MAX_PACKAGE_BYTES;
+        let manifest_bytes = read_file(&mut archive, "manifest.json", &mut budget)?;
         let raw_manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)
             .map_err(|error| StockPackageError::Manifest(error.to_string()))?;
         let manifest: Manifest = serde_json::from_value(raw_manifest.clone())
@@ -135,7 +147,7 @@ impl StockPackage {
         let mut files = BTreeMap::new();
         for (name, part) in &manifest.parts {
             let Some(src) = &part.src else { continue };
-            let data = read_file(&mut archive, src)?;
+            let data = read_file(&mut archive, src, &mut budget)?;
             let mismatch = |what| StockPackageError::PartMismatch { part: name.clone(), what };
             if part.size != Some(data.len()) {
                 return Err(mismatch("size"));
@@ -156,9 +168,15 @@ impl StockPackage {
         };
         let bootloader = Esp32Image::parse(file_of("boot", |part| part.addr.is_some())?)
             .map_err(|source| StockPackageError::Image { part: "bootloader", source })?;
+        if bootloader.is_app {
+            return Err(StockPackageError::WrongKind("boot"));
+        }
         let table = PartitionTable::parse(file_of("pt", |part| part.addr.is_some())?)?;
         let app = Esp32Image::parse(file_of("app", |part| part.ptn.is_some())?)
             .map_err(|source| StockPackageError::Image { part: "app", source })?;
+        if !app.is_app {
+            return Err(StockPackageError::WrongKind("app"));
+        }
         Ok(Self {
             name: manifest.name,
             version: manifest.version,

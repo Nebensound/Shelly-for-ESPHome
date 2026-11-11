@@ -26,6 +26,16 @@ fn reads_bootloaders_and_applications() {
     plain.truncate(plain.len() - 32);
     plain[23] = 0;
     assert_eq!(Esp32Image::parse(&plain).expect("without hash").len, plain.len());
+
+    // Any non-zero flag means a digest is appended; it is checked and counted.
+    let mut flagged = image(ImageSpec::default());
+    flagged[23] = 2;
+    let len = flagged.len();
+    let digest = Sha256::digest(&flagged[..len - 32]);
+    flagged[len - 32..].copy_from_slice(&digest);
+    assert_eq!(Esp32Image::parse(&flagged).expect("flag 2").len, len);
+    flagged[len - 1] ^= 0x01;
+    assert_eq!(Esp32Image::parse(&flagged), Err(ImageError::Hash));
 }
 
 #[test]

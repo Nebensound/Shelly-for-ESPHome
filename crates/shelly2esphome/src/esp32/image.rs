@@ -105,7 +105,8 @@ impl Esp32Image {
             return Err(ImageError::Checksum);
         }
         let mut len = checksum_at + 1;
-        if header[23] == 1 {
+        // ESP-IDF treats any non-zero value as "digest appended".
+        if header[23] != 0 {
             let appended = bytes.get(len..len + SHA256_LEN).ok_or(ImageError::Truncated)?;
             if Sha256::digest(bytes.get(..len).unwrap_or_default()).as_slice() != appended {
                 return Err(ImageError::Hash);

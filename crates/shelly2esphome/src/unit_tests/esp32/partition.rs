@@ -1,7 +1,7 @@
 //! Unit tests of `crate::esp32::partition` (not counted as production code for coverage).
 
 use super::*;
-use crate::esp32::synthetic::{LAYOUT, table};
+use crate::esp32::synthetic::{LAYOUT, table, table_with_flags};
 
 #[test]
 fn reads_a_table_with_and_without_checksum() {
@@ -10,6 +10,7 @@ fn reads_a_table_with_and_without_checksum() {
     let app = parsed.find("app_0").expect("app_0");
     assert_eq!((app.kind, app.subtype, app.offset, app.size), (0, 0x10, 0x1_0000, 0x1_0000));
     assert_eq!(app.to_string(), "type 0/0x10 at 0x10000, 0x10000 bytes");
+    assert_eq!(app.flags, 0);
     assert!(parsed.find("missing").is_none());
 
     // ESP-IDF can build tables without the MD5 entry.
@@ -33,6 +34,19 @@ fn refuses_malformed_and_damaged_tables() {
     let mut damaged = good.clone();
     damaged[20] ^= 0x01;
     assert_eq!(parse(&damaged), PartitionError::Checksum);
+}
+
+#[test]
+fn compares_flags_too() {
+    let reference = PartitionTable::parse(&table(&LAYOUT)).expect("reference");
+    let encrypted =
+        PartitionTable::parse(&table_with_flags(&LAYOUT, &[("nvs", 1)])).expect("flags");
+    assert_eq!(encrypted.find("nvs").map(|nvs| nvs.flags), Some(1));
+    assert_eq!(
+        encrypted.differences(&reference).critical,
+        ["nvs: type 1/0x02 at 0xb000, 0x5000 bytes, flags 0x1, the device has type 1/0x02 at \
+          0xb000, 0x5000 bytes"]
+    );
 }
 
 #[test]

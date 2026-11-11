@@ -87,6 +87,12 @@ pub const TABLE_ADDR: usize = 0x8000;
 /// A partition table with MD5 entry and end marker.
 #[must_use]
 pub fn table(entries: &[Entry]) -> Vec<u8> {
+    table_with_flags(entries, &[])
+}
+
+/// Like [`table`], with `flags` for the named partitions.
+#[must_use]
+pub fn table_with_flags(entries: &[Entry], flags: &[(&str, u32)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (label, kind, subtype, offset, size) in entries {
         out.extend_from_slice(&[0xAA, 0x50, *kind, *subtype]);
@@ -97,7 +103,8 @@ pub fn table(entries: &[Entry]) -> Vec<u8> {
             *slot = byte;
         }
         out.extend_from_slice(&name);
-        out.extend_from_slice(&[0; 4]);
+        let flag = flags.iter().find(|(name, _)| name == label).map_or(0, |(_, flag)| *flag);
+        out.extend_from_slice(&flag.to_le_bytes());
     }
     let digest = Md5::digest(&out);
     out.extend_from_slice(&[0xEB, 0xEB]);
