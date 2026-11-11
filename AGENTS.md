@@ -51,6 +51,13 @@ live here were removed on purpose; do not reintroduce them.
   - `backup.rs` saves the stock settings; `discover.rs` scans networks for
     `list`. Both only send reading requests.
   - `device.rs` holds the HTTP client for the stock and migration firmware.
+    `http.rs` builds the plain HTTP clients; reqwest has rustls without a
+    default crypto provider, so every client is built through it (or brings
+    its own TLS configuration), otherwise building it panics.
+  - `shelly_tls/` is the HTTPS client for Shelly's update servers. They use
+    Shelly's own CA and X.509 version 1 certificates, which general-purpose
+    verifiers refuse, so it trusts only the root built into the program
+    (pinned by SHA-256) and reads the certificates itself (`cert.rs`).
   - `esp32/` reads ESP32 images, ESP-IDF partition tables and the merged
     factory image ESPHome builds; `stock_package.rs` reads the official Gen2+
     update package (the manifest stays as JSON so unknown fields survive a
@@ -107,6 +114,9 @@ live here were removed on purpose; do not reintroduce them.
 6. The migration firmware never serves files over HTTP
    (`http.document_root` is empty); its filesystem holds the Wi-Fi
    credentials.
+7. TLS verification is never switched off. Shelly's servers are trusted only
+   through the pinned root in `shelly_tls`; a change of that root comes with
+   its new SHA-256 and the source it was taken from.
 
 ## Conventions
 

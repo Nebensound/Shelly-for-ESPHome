@@ -164,7 +164,7 @@ impl DeviceClient {
     #[must_use]
     pub fn new(host: &str, credentials: Option<Credentials>) -> Self {
         // Without TLS backends, building the client cannot fail.
-        let http = reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build().unwrap_or_default();
+        let http = crate::http::builder().timeout(REQUEST_TIMEOUT).build().unwrap_or_default();
         Self { base_url: format!("http://{host}"), http, credentials }
     }
 

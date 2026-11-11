@@ -252,7 +252,7 @@ async fn probe(http: &reqwest::Client, ip: Ipv4Addr, port: u16) -> Option<Found>
 /// sorted by address.
 pub async fn scan(networks: &[Network], options: &ScanOptions) -> Vec<(IpAddr, Found)> {
     // Without TLS backends, building the client cannot fail.
-    let http = reqwest::Client::builder().timeout(options.timeout).build().unwrap_or_default();
+    let http = crate::http::builder().timeout(options.timeout).build().unwrap_or_default();
     let mut addresses: Vec<Ipv4Addr> =
         networks.iter().flat_map(|network| network.hosts()).collect();
     addresses.sort();

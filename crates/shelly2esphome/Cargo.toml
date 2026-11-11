@@ -1,6 +1,6 @@
 [package]
 name = "shelly2esphome"
-version = "0.6.0"
+version = "0.7.0"
 description = "Flash a self-built ESPHome firmware onto Shelly Gen1 devices over the air"
 # The CLI is MIT; the embedded migration firmware packages are GPL-3.0 (NOTICE).
 license = "MIT AND GPL-3.0-only"
@@ -15,6 +15,7 @@ repository.workspace = true
 include = [
     "build.rs",
     "src/**/*.rs",
+    "src/shelly_tls/shelly-root-ca.der",
     "packages/mg2esphome-*.zip",
     "LICENSE",
     "LICENSE-migration-firmware",
@@ -31,12 +32,17 @@ getrandom.workspace = true
 hex.workspace = true
 md-5.workspace = true
 reqwest.workspace = true
+ring.workspace = true
+rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 zip.workspace = true
+
+[dev-dependencies]
+tokio-rustls.workspace = true
 
 [build-dependencies]
 zip.workspace = true
