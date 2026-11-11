@@ -10,7 +10,9 @@ name: Device reports
 #   again when the author edits the issue.
 # Nothing from the issue reaches a shell: the task reads the event file itself,
 # and the steps below use only the issue number, the author's login (passed
-# through the environment) and the task's own decision.
+# through the environment) and the task's decision. Two jobs: cargo runs
+# third-party build code, so it runs in a job that can only read; the job that
+# writes never runs cargo and checks what it takes over.
 on:
   issues:
     types: [opened, edited]
@@ -23,27 +25,21 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The task builds the CLI's library, which needs no release packages.
-  SHELLY2ESPHOME_NO_DOWNLOAD: "1"
+  ISSUE: ${{ github.event.issue.number }}
 
 jobs:
-  intake:
-    name: Report intake
+  check:
+    name: Check the report
     if: >-
       github.event.issue.state == 'open'
       && contains(github.event.issue.labels.*.name, 'device-report')
     runs-on: ubuntu-latest
     permissions:
-      contents: write # push the report branch
-      pull-requests: write # open the pull request and enable auto-merge
-      issues: write # comment on the issue
-      actions: write # dispatch CI on the report branch
+      contents: read
     env:
-      ISSUE: ${{ github.event.issue.number }}
-      # Relative to RUNNER_TEMP, outside the checkout.
-      DECISION_FILE: decision.json
+      # The task builds the CLI's library, which needs no release packages.
+      SHELLY2ESPHOME_NO_DOWNLOAD: "1"
     steps:
-      # No credentials while cargo runs third-party build code.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
@@ -71,23 +67,68 @@ jobs:
           # deleted release.
           gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' \
             > "$RUNNER_TEMP/releases.txt"
-      # No token here: cargo runs third-party build code.
+      # No token in cargo's environment.
       - name: Check the report
-        id: intake
         env:
           AGE: ${{ steps.author.outputs.age }}
           RECENT: ${{ steps.author.outputs.recent }}
         run: |
           set -euo pipefail
-          DECISION="$RUNNER_TEMP/$DECISION_FILE"
           released=()
           while read -r tag; do
             released+=(--released "${tag#v}")
           done < "$RUNNER_TEMP/releases.txt"
+          mkdir -p "$RUNNER_TEMP/intake"
           cargo xtask report-intake --event "$GITHUB_EVENT_PATH" \
-            --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" > "$DECISION"
-          cat "$DECISION"
-          echo "verdict=$(jq -r .verdict "$DECISION")" >> "$GITHUB_OUTPUT"
+            --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" \
+            > "$RUNNER_TEMP/intake/decision.json"
+          cat "$RUNNER_TEMP/intake/decision.json"
+          file="docs/device-reports/$ISSUE.json"
+          if [ -f "$file" ]; then
+            cp "$file" "$RUNNER_TEMP/intake/report.json"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: intake
+          path: ${{ runner.temp }}/intake/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish the outcome
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the report branch
+      pull-requests: write # open the pull request and enable auto-merge
+      issues: write # comment on the issue
+      actions: write # dispatch CI on the report branch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: intake
+          path: ${{ runner.temp }}/intake
+      # The decision comes from a job that ran third-party code, so only the
+      # expected verdicts and the one expected path are taken over.
+      - name: Read the decision
+        id: intake
+        run: |
+          set -euo pipefail
+          decision="$RUNNER_TEMP/intake/decision.json"
+          verdict="$(jq -r .verdict "$decision")"
+          file="docs/device-reports/$ISSUE.json"
+          case "$verdict" in
+            accept | review)
+              test "$(jq -r .file "$decision")" = "$file"
+              mkdir -p docs/device-reports
+              cp "$RUNNER_TEMP/intake/report.json" "$file" ;;
+            reject) ;;
+            *) echo "::error::unknown verdict"; exit 1 ;;
+          esac
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
       # Branch and pull request are named after the issue, so an edit of the
       # issue updates them instead of opening another one.
       - name: Open or update the pull request
@@ -98,10 +139,10 @@ jobs:
           VERDICT: ${{ steps.intake.outputs.verdict }}
         run: |
           set -euo pipefail
-          DECISION="$RUNNER_TEMP/$DECISION_FILE"
+          DECISION="$RUNNER_TEMP/intake/decision.json"
           gh auth setup-git
           branch="device-report/$ISSUE"
-          file="$(jq -r .file "$DECISION")"
+          file="docs/device-reports/$ISSUE.json"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --create "$branch"
@@ -178,7 +219,7 @@ jobs:
           PR: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
-          DECISION="$RUNNER_TEMP/$DECISION_FILE"
+          DECISION="$RUNNER_TEMP/intake/decision.json"
           {
             echo "Thanks for the report!"
             echo
