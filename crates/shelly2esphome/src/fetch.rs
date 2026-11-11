@@ -14,6 +14,7 @@
 
 use std::{
     error::Error as _,
+    hash::{BuildHasher, RandomState},
     io::{Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
@@ -247,12 +248,15 @@ fn cached(path: &Path, digest: &[u8; 32]) -> Result<Option<Vec<u8>>, FetchError>
 
 /// Writes the package to `path` through a temporary file of its own, so
 /// that neither an interrupted write nor a concurrent one (another process,
-/// or another device in the same run) leaves a partial package under the
-/// final name.
+/// container or device in the same run) leaves a partial package under the
+/// final name. The file name carries 64 random bits (process IDs repeat
+/// across containers and after restarts), so the cleanup after a failure
+/// only ever removes this call's own file.
 fn store(path: &Path, bytes: &[u8]) -> Result<(), FetchError> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let unique = format!("{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-    let partial = path.with_extension(format!("zip.{unique}.part"));
+    // RandomState is keyed from the operating system's random source.
+    let unique = RandomState::new().hash_one(NEXT.fetch_add(1, Ordering::Relaxed));
+    let partial = path.with_extension(format!("zip.{unique:016x}.part"));
     path.parent()
         .map_or(Ok(()), std::fs::create_dir_all)
         .and_then(|()| std::fs::OpenOptions::new().write(true).create_new(true).open(&partial))
