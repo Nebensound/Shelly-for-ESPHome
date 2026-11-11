@@ -177,7 +177,7 @@ impl Found {
                     format!("busy ({:?})", status.state)
                 }
             },
-            Self::Newer { .. } => "not supported (only Gen1)".to_owned(),
+            Self::Newer { generation, .. } => format!("Gen{generation}: not supported yet"),
         }
     }
 }

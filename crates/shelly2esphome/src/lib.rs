@@ -15,4 +15,5 @@ pub mod image;
 pub mod migration;
 pub mod model;
 pub mod protocol;
+pub mod rpc;
 pub mod server;

@@ -1,10 +1,12 @@
-//! HTTP access to a Shelly Gen1 device, both in stock and in migration firmware.
+//! HTTP access to a Shelly Gen1 device, both in stock and in migration firmware,
+//! and read-only identification of later generations.
 
 use std::time::Duration;
 
 use serde::Deserialize;
 
 pub use crate::protocol::MIGRATION_PROTOCOL;
+use crate::rpc::{DeviceInfo, WifiStatusWire};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Login for devices with enabled web authentication, given as `user:password`.
@@ -140,6 +142,13 @@ pub enum Firmware {
     },
     /// The migration firmware of this project.
     Migration(MigrationStatus),
+    /// Stock firmware of generation 2 or later, which this tool cannot migrate yet.
+    Newer {
+        /// `/shelly` answer.
+        info: DeviceInfo,
+        /// Wi-Fi signal strength in dBm, `None` if the device requires a login.
+        rssi_dbm: Option<i32>,
+    },
 }
 
 /// Client for one device.
@@ -198,11 +207,18 @@ impl DeviceClient {
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(DeviceError::AuthRequired);
         }
-        if response.status().is_success()
-            && let Ok(info) = response.json::<StockInfo>().await
-        {
-            let rssi_dbm = self.stock_rssi().await?;
-            return Ok(Firmware::Stock { info, rssi_dbm });
+        if response.status().is_success() {
+            // An unreadable body is treated like an unknown answer: the
+            // migration firmware is asked next, as for any other content.
+            let body = response.bytes().await.unwrap_or_default();
+            if let Ok(info) = serde_json::from_slice::<StockInfo>(&body) {
+                let rssi_dbm = self.stock_rssi().await?;
+                return Ok(Firmware::Stock { info, rssi_dbm });
+            }
+            if let Ok(info) = serde_json::from_slice::<DeviceInfo>(&body) {
+                let rssi_dbm = self.newer_rssi().await?;
+                return Ok(Firmware::Newer { info, rssi_dbm });
+            }
         }
         match self.migration_status().await? {
             Some(status) => Ok(Firmware::Migration(status)),
@@ -216,6 +232,18 @@ impl DeviceClient {
             200 => Ok(response.json::<StockStatusWire>().await?.wifi_sta.rssi),
             401 => Err(DeviceError::AuthRequired),
             status => Err(DeviceError::Status { endpoint: "/status", status }),
+        }
+    }
+
+    async fn newer_rssi(&self) -> Result<Option<i32>, DeviceError> {
+        let response =
+            self.http.get(format!("{}/rpc/Wifi.GetStatus", self.base_url)).send().await?;
+        match response.status().as_u16() {
+            200 => Ok(Some(response.json::<WifiStatusWire>().await?.rssi)),
+            // Generation 2 and later use digest authentication, which this
+            // tool does not speak yet; the signal stays unknown.
+            401 => Ok(None),
+            status => Err(DeviceError::Status { endpoint: "/rpc/Wifi.GetStatus", status }),
         }
     }
 

@@ -73,7 +73,7 @@ fn classifies_and_describes_devices() {
     assert!(!newer.can_flash());
     assert_eq!(newer.device(), "SNSW-001P16EU (Gen2)");
     assert_eq!(newer.firmware(), "1.4.4");
-    assert!(newer.state().contains("only Gen1"));
+    assert_eq!(newer.state(), "Gen2: not supported yet");
 
     let waiting = migration(MigrationState::Failed);
     assert!(waiting.can_flash());

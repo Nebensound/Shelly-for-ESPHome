@@ -19,6 +19,7 @@ use crate::{
     image::FirmwareImage,
     migration::{MigrationPackage, PackageError},
     model::Model,
+    rpc::{Generation, ModelId},
     server::{FileServer, IMAGE_PATH, PACKAGE_PATH},
 };
 
@@ -128,6 +129,17 @@ pub enum FlashError {
     /// The device type is not supported by the migration firmware.
     #[error("device type {0} is not supported")]
     UnsupportedModel(String),
+    /// The device is a Shelly of generation 2 or later.
+    #[error(
+        "{model} is a Shelly {generation}; only Gen1 devices can be flashed so far. Nothing was \
+         changed."
+    )]
+    UnsupportedGeneration {
+        /// Model ID.
+        model: ModelId,
+        /// Generation.
+        generation: Generation,
+    },
     /// The Wi-Fi signal is too weak for a safe transfer.
     #[error(
         "Wi-Fi signal too weak: {rssi_dbm} dBm (minimum {min_rssi_dbm} dBm). Improve the \
@@ -424,6 +436,12 @@ pub async fn run(
                 reporter.info(&format!("Stock settings saved to {}", directory.display()));
             }
             (Some(package), None)
+        }
+        Firmware::Newer { info, .. } => {
+            return Err(FlashError::UnsupportedGeneration {
+                model: info.model,
+                generation: info.generation,
+            });
         }
         Firmware::Migration(status) => {
             if matches!(status.state, MigrationState::Downloading | MigrationState::Installing) {

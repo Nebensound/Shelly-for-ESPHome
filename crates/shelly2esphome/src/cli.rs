@@ -278,6 +278,31 @@ async fn probe(
                 let _ = writeln!(out, "Login enabled: pass --auth user:password.");
             }
         }
+        Firmware::Newer { info, rssi_dbm } => {
+            let chip = info
+                .generation
+                .chip_family()
+                .map_or_else(|| "unknown chip".to_owned(), |chip| chip.to_string());
+            let _ = writeln!(
+                out,
+                "Stock firmware: Shelly {} ({chip}), model {}, app {}, firmware {}, MAC {}",
+                info.generation, info.model, info.app, info.firmware, info.mac
+            );
+            if let Some(slot) = info.slot {
+                let _ = writeln!(out, "Runs from app slot {slot}.");
+            }
+            let _ = match rssi_dbm {
+                Some(rssi_dbm) => writeln!(out, "Wi-Fi signal: {rssi_dbm} dBm"),
+                None => writeln!(out, "Wi-Fi signal: unknown (login enabled)"),
+            };
+            if info.firmware.is_beta() {
+                let _ = writeln!(
+                    out,
+                    "Beta firmware: its flash layout can differ from the stable release."
+                );
+            }
+            let _ = writeln!(out, "Not supported yet: only Gen1 devices can be flashed so far.");
+        }
         Firmware::Migration(status) => {
             let _ = writeln!(
                 out,
