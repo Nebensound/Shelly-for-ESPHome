@@ -50,7 +50,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
-      - name: Look up the author
+      - name: Look up the author and the releases
         id: author
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,21 +67,23 @@ jobs:
           echo "account age $age days, $recent reports within a day"
           echo "age=$age" >> "$GITHUB_OUTPUT"
           echo "recent=$recent" >> "$GITHUB_OUTPUT"
+          # Published releases, not tags: a tag may outlive a failed or
+          # deleted release.
+          gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' \
+            > "$RUNNER_TEMP/releases.txt"
+      # No token here: cargo runs third-party build code.
       - name: Check the report
         id: intake
         env:
-          GH_TOKEN: ${{ github.token }}
           AGE: ${{ steps.author.outputs.age }}
           RECENT: ${{ steps.author.outputs.recent }}
         run: |
           set -euo pipefail
           DECISION="$RUNNER_TEMP/$DECISION_FILE"
-          # Published releases, not tags: a tag may outlive a failed or
-          # deleted release.
           released=()
           while read -r tag; do
             released+=(--released "${tag#v}")
-          done < <(gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName')
+          done < "$RUNNER_TEMP/releases.txt"
           cargo xtask report-intake --event "$GITHUB_EVENT_PATH" \
             --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" > "$DECISION"
           cat "$DECISION"
