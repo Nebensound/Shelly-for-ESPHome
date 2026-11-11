@@ -4,7 +4,10 @@
 mod common;
 
 use common::{closed_port, raw, scripted};
-use shelly2esphome::device::{Credentials, DeviceClient, DeviceError, Firmware};
+use shelly2esphome::{
+    device::{Credentials, DeviceClient, DeviceError, Firmware},
+    rpc::WifiSignal,
+};
 
 const STOCK: &str = r#"{"type":"SHSW-PM","mac":"AABBCCDDEEFF","auth":true,"fw":"1.14.0"}"#;
 // Recorded from a Shelly Plug M Gen3 on a beta firmware.
@@ -169,25 +172,28 @@ async fn start_migration_maps_every_answer() {
 
 #[tokio::test]
 async fn identify_reads_later_generations_without_changing_them() {
-    let (host, seen) =
-        scripted(&[("/shelly", 200, GEN3), ("/rpc/Wifi.GetStatus", 200, r#"{"rssi":-74}"#)]).await;
-    let Firmware::Newer { info, rssi_dbm } = client(&host).identify().await.unwrap() else {
+    let (host, seen) = scripted(&[
+        ("/shelly", 200, GEN3),
+        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"got ip","rssi":-74}"#),
+    ])
+    .await;
+    let Firmware::Newer { info, wifi } = client(&host).identify().await.unwrap() else {
         panic!("later generation expected");
     };
     assert_eq!(info.model.as_str(), "S3PL-30110EU");
     assert_eq!(info.app.as_str(), "PlugMG3");
     assert_eq!(info.slot, Some(1));
     assert!(info.firmware.is_beta());
-    assert_eq!(rssi_dbm, Some(-74));
+    assert_eq!(wifi, WifiSignal::Dbm(-74));
     // Two reading requests and nothing else.
     assert_eq!(seen.lock().unwrap().len(), 2);
 
     // With web authentication the signal stays unknown instead of failing.
     let (host, _) = scripted(&[("/shelly", 200, GEN3), ("/rpc/Wifi.GetStatus", 401, "")]).await;
-    let Firmware::Newer { rssi_dbm, .. } = client(&host).identify().await.unwrap() else {
+    let Firmware::Newer { wifi, .. } = client(&host).identify().await.unwrap() else {
         panic!("later generation expected");
     };
-    assert_eq!(rssi_dbm, None);
+    assert_eq!(wifi, WifiSignal::LoginRequired);
 
     let (host, _) = scripted(&[("/shelly", 200, GEN3), ("/rpc/Wifi.GetStatus", 503, "")]).await;
     let error = client(&host).identify().await.unwrap_err();

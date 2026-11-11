@@ -23,6 +23,7 @@ use crate::{
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
+    rpc::WifiSignal,
 };
 
 /// Flash a self-built ESPHome firmware onto Shelly Gen1 devices over the air.
@@ -278,22 +279,19 @@ async fn probe(
                 let _ = writeln!(out, "Login enabled: pass --auth user:password.");
             }
         }
-        Firmware::Newer { info, rssi_dbm } => {
-            let chip = info
-                .generation
-                .chip_family()
-                .map_or_else(|| "unknown chip".to_owned(), |chip| chip.to_string());
+        Firmware::Newer { info, wifi } => {
             let _ = writeln!(
                 out,
-                "Stock firmware: Shelly {} ({chip}), model {}, app {}, firmware {}, MAC {}",
+                "Stock firmware: Shelly {}, model {}, app {}, firmware {}, MAC {}",
                 info.generation, info.model, info.app, info.firmware, info.mac
             );
             if let Some(slot) = info.slot {
                 let _ = writeln!(out, "Runs from app slot {slot}.");
             }
-            let _ = match rssi_dbm {
-                Some(rssi_dbm) => writeln!(out, "Wi-Fi signal: {rssi_dbm} dBm"),
-                None => writeln!(out, "Wi-Fi signal: unknown (login enabled)"),
+            let _ = match wifi {
+                WifiSignal::Dbm(rssi_dbm) => writeln!(out, "Wi-Fi signal: {rssi_dbm} dBm"),
+                WifiSignal::NotConnected => writeln!(out, "Wi-Fi: not connected"),
+                WifiSignal::LoginRequired => writeln!(out, "Wi-Fi signal: unknown (login enabled)"),
             };
             if info.firmware.is_beta() {
                 let _ = writeln!(

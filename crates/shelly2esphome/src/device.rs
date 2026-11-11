@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 pub use crate::protocol::MIGRATION_PROTOCOL;
-use crate::rpc::{DeviceInfo, WifiStatusWire};
+use crate::rpc::{DeviceInfo, WifiSignal, WifiStatusWire};
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Login for devices with enabled web authentication, given as `user:password`.
@@ -146,8 +146,8 @@ pub enum Firmware {
     Newer {
         /// `/shelly` answer.
         info: DeviceInfo,
-        /// Wi-Fi signal strength in dBm, `None` if the device requires a login.
-        rssi_dbm: Option<i32>,
+        /// Wi-Fi signal.
+        wifi: WifiSignal,
     },
 }
 
@@ -216,8 +216,8 @@ impl DeviceClient {
                 return Ok(Firmware::Stock { info, rssi_dbm });
             }
             if let Ok(info) = serde_json::from_slice::<DeviceInfo>(&body) {
-                let rssi_dbm = self.newer_rssi().await?;
-                return Ok(Firmware::Newer { info, rssi_dbm });
+                let wifi = self.newer_wifi().await?;
+                return Ok(Firmware::Newer { info, wifi });
             }
         }
         match self.migration_status().await? {
@@ -235,14 +235,14 @@ impl DeviceClient {
         }
     }
 
-    async fn newer_rssi(&self) -> Result<Option<i32>, DeviceError> {
+    async fn newer_wifi(&self) -> Result<WifiSignal, DeviceError> {
         let response =
             self.http.get(format!("{}/rpc/Wifi.GetStatus", self.base_url)).send().await?;
         match response.status().as_u16() {
-            200 => Ok(Some(response.json::<WifiStatusWire>().await?.rssi)),
+            200 => Ok(response.json::<WifiStatusWire>().await?.signal()),
             // Generation 2 and later use digest authentication, which this
             // tool does not speak yet; the signal stays unknown.
-            401 => Ok(None),
+            401 => Ok(WifiSignal::LoginRequired),
             status => Err(DeviceError::Status { endpoint: "/rpc/Wifi.GetStatus", status }),
         }
     }

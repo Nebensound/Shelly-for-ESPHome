@@ -3,19 +3,21 @@
 use super::*;
 
 #[test]
-fn generations_know_their_chip_family() {
+fn generations_start_at_two() {
     assert!(Generation::try_from(1).expect_err("generation 1").contains("generation 1"));
-    let chips: Vec<Option<ChipFamily>> =
-        [2, 3, 4, 5].map(|generation| Generation(generation).chip_family()).to_vec();
-    assert_eq!(
-        chips,
-        [Some(ChipFamily::Esp32), Some(ChipFamily::Esp32C3), Some(ChipFamily::Esp32C6), None]
-    );
+    assert_eq!(Generation::try_from(3), Ok(Generation(3)));
     assert_eq!(Generation(3).to_string(), "Gen3");
-    let names: Vec<String> = [ChipFamily::Esp32, ChipFamily::Esp32C3, ChipFamily::Esp32C6]
-        .map(|chip| chip.to_string())
-        .to_vec();
-    assert_eq!(names, ["ESP32", "ESP32-C3", "ESP32-C6"]);
+}
+
+#[test]
+fn reads_the_signal_only_while_connected() {
+    let signal = |json: &str| serde_json::from_str::<WifiStatusWire>(json).expect(json).signal();
+    assert_eq!(signal(r#"{"status":"got ip","rssi":-63}"#), WifiSignal::Dbm(-63));
+    assert_eq!(signal(r#"{"status":"connected","rssi":-70}"#), WifiSignal::Dbm(-70));
+    // A Pro device on Ethernet: rssi reads 0 or is missing.
+    assert_eq!(signal(r#"{"status":"disconnected","rssi":0}"#), WifiSignal::NotConnected);
+    assert_eq!(signal(r#"{"status":"disconnected"}"#), WifiSignal::NotConnected);
+    assert_eq!(signal(r#"{"status":"got ip"}"#), WifiSignal::NotConnected);
 }
 
 #[test]
