@@ -65,6 +65,23 @@ pub struct Report {
     pub duration: Duration,
 }
 
+/// Whether `text` has the form of a Gen1 stock firmware build,
+/// `YYYYMMDD-HHMMSS/v<version>` with at most 40 characters of
+/// `[0-9A-Za-z.+@_-]` after the slash. The device reports it, so anything
+/// else could be free text and is not put into a report.
+fn is_stock_build(text: &str) -> bool {
+    text.split_once('/').is_some_and(|(date, version)| {
+        date.len() == 15
+            && date
+                .bytes()
+                .enumerate()
+                .all(|(index, byte)| if index == 8 { byte == b'-' } else { byte.is_ascii_digit() })
+            && version.starts_with('v')
+            && (2..=40).contains(&version.len())
+            && version.bytes().all(|byte| byte.is_ascii_alphanumeric() || b".+@_-".contains(&byte))
+    })
+}
+
 fn yes_no(value: Option<bool>) -> String {
     value.map_or("unknown", |value| if value { "yes" } else { "no" }).to_owned()
 }
@@ -94,7 +111,15 @@ impl Report {
             ("result", self.result.clone()),
             ("model", facts.model.map_or("unknown", Model::device_type).to_owned()),
             ("generation", "Gen1".to_owned()),
-            ("stock-firmware", facts.stock_firmware.clone().unwrap_or_else(|| "unknown".into())),
+            (
+                "stock-firmware",
+                facts
+                    .stock_firmware
+                    .as_deref()
+                    .filter(|build| is_stock_build(build))
+                    .unwrap_or("unknown")
+                    .to_owned(),
+            ),
             ("signal", facts.rssi_dbm.map_or("unknown".into(), |rssi| format!("{rssi} dBm"))),
             ("login", yes_no(facts.login)),
             ("backup", yes_no(facts.backup)),

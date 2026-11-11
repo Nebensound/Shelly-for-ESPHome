@@ -384,6 +384,14 @@ async fn links_a_failure_report_after_the_error() {
     assert!(link.contains("&backup=no&"), "{link}");
     assert!(failed.out.is_empty());
 
+    // A run resumed in the migration firmware does not know the model and
+    // links nothing, neither after a success.
+    let (host, shared, settings) = flash_settings(Mode::Migration).await;
+    let resumed = run(&["flash", &host, "-f", &firmware_file(), "--yes"], &settings).await;
+    assert_eq!(resumed.code, ExitCode::SUCCESS, "{}", resumed.err);
+    assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
+    assert!(resumed.out.is_empty(), "{}", resumed.out);
+
     // A refusal before any change links nothing.
     let (host, _, settings) = flash_settings(Mode::Stock).await;
     let weak = run(&["flash", &host, "-f", &firmware_file(), "--min-rssi", "-50"], &settings).await;

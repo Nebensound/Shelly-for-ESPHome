@@ -53,6 +53,8 @@ async fn names_every_failure_for_device_reports() {
     let generation = Generation::try_from(3).expect("generation");
     let refusals = [
         FlashError::Device(DeviceError::AuthRequired),
+        // The login is missing only for the settings the backup reads.
+        FlashError::Backup(BackupError::Device(DeviceError::AuthRequired)),
         FlashError::UnsupportedModel("SHXX-1".into()),
         FlashError::UnsupportedGeneration { model, generation },
         FlashError::WeakSignal { rssi_dbm: -90, min_rssi_dbm: -75 },

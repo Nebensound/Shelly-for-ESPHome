@@ -463,13 +463,17 @@ async fn execute(
                          dashboard.",
                         outcome.esphome_address
                     ));
-                    let _ = writeln!(
-                        console.terminal.out,
-                        "Help others with the same device: report that it works. The link opens a \
-                         prefilled GitHub issue with no addresses or names; nothing is sent until \
-                         you submit it:\n{}",
-                        report(report::SUCCESS.to_owned(), console.facts)
-                    );
+                    // A run resumed in the migration firmware never saw the
+                    // model, so there is nothing to tell others about.
+                    if console.facts.model.is_some() {
+                        let _ = writeln!(
+                            console.terminal.out,
+                            "Help others with the same device: report that it works. The link \
+                             opens a prefilled GitHub issue with no addresses or names; nothing is \
+                             sent until you submit it:\n{}",
+                            report(report::SUCCESS.to_owned(), console.facts)
+                        );
+                    }
                     Ok(())
                 }
                 // Only for a device identified as supported: a wrong address

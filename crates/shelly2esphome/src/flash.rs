@@ -238,6 +238,7 @@ impl FlashError {
     pub fn report_kind(&self) -> Option<String> {
         let kind = match self {
             Self::Device(DeviceError::AuthRequired)
+            | Self::Backup(BackupError::Device(DeviceError::AuthRequired))
             | Self::UnsupportedModel(_)
             | Self::UnsupportedGeneration { .. }
             | Self::WeakSignal { .. }

@@ -60,6 +60,31 @@ fn fills_every_field_and_marks_unknowns() {
 }
 
 #[test]
+fn keeps_only_stock_build_identifiers() {
+    let with = |build: &str| {
+        let mut report = full();
+        report.facts.stock_firmware = Some(build.to_owned());
+        report.fields()[3].1.clone()
+    };
+    for build in ["20230913-114008/v1.14.0-gcb84623", "20210115-102730/v1.9.4@e2732e05"] {
+        assert_eq!(with(build), build);
+    }
+    for text in [
+        "10.0.0.2",                                                   // no build at all
+        "my-kitchen-light/v1.14.0",                                   // a name instead of the date
+        "2023091-114008/v1.14.0",                                     // date too short
+        "20230913x114008/v1.14.0",                                    // no dash
+        "20230913-11400a/v1.14.0",                                    // not digits
+        "20230913-114008/1.14.0",                                     // no v
+        "20230913-114008/v",                                          // nothing after v
+        "20230913-114008/v1.14.0 admin:secret",                       // free text
+        "20230913-114008/v1.14.0-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // too long
+    ] {
+        assert_eq!(with(text), "unknown", "{text}");
+    }
+}
+
+#[test]
 fn codes_the_fields_so_edits_show() {
     let fields = full().fields();
     let lines: String = fields.iter().map(|(id, value)| format!("{id}={value}\n")).collect();
