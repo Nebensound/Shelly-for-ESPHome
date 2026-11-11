@@ -69,20 +69,26 @@ pub fn image(spec: ImageSpec) -> Vec<u8> {
 /// A partition: label, type, subtype, offset, size.
 pub type Entry = (&'static str, u8, u8, u32, u32);
 
-/// A Shelly-like layout with the bootloader at 0x0 and the table at 0x8000.
-pub const LAYOUT: [Entry; 7] = [
-    ("otadata", 1, 0x00, 0x9000, 0x2000),
-    ("nvs", 1, 0x02, 0xB000, 0x5000),
-    ("app_0", 0, 0x10, 0x1_0000, 0x1_0000),
-    ("app_1", 0, 0x11, 0x2_0000, 0x1_0000),
-    ("fs_0", 1, 0x82, 0x3_0000, 0x8000),
-    ("fs_1", 1, 0x82, 0x3_8000, 0x8000),
-    ("shelly", 1, 0x99, 0x4_0000, 0x1000),
+/// The layout of the Shelly 1 Gen3 (`S1G3`) 2.2.0, with the bootloader at
+/// 0x0 and the table at 0xF000, so the package matches its profile.
+pub const LAYOUT: [Entry; 8] = [
+    ("otadata", 1, 0x00, 0x1_1000, 0x2000),
+    ("nvs", 1, 0x02, 0x1_4000, 0xC000),
+    ("app_0", 0, 0x10, 0x2_0000, 0x30_0000),
+    ("fs_0", 1, 0x82, 0x32_0000, 0xE_0000),
+    ("app_1", 0, 0x11, 0x40_0000, 0x30_0000),
+    ("fs_1", 1, 0x82, 0x70_0000, 0xE_0000),
+    ("scratch", 1, 0x80, 0x7E_0000, 0x1_0000),
+    ("shelly", 1, 0x88, 0x7F_0000, 0x1_0000),
 ];
 /// Bootloader address of [`LAYOUT`].
 pub const BOOT_ADDR: usize = 0;
 /// Partition table address of [`LAYOUT`].
-pub const TABLE_ADDR: usize = 0x8000;
+pub const TABLE_ADDR: usize = 0xF000;
+/// Offset of `app_0` in [`LAYOUT`].
+pub const APP_ADDR: usize = 0x2_0000;
+/// Offset and size of `otadata` in [`LAYOUT`].
+pub const OTADATA: (usize, usize) = (0x1_1000, 0x2000);
 
 /// A partition table with MD5 entry and end marker.
 #[must_use]
@@ -145,6 +151,15 @@ impl Default for Fixture {
     }
 }
 
+/// The boot state of the stock installer in the official package (it starts
+/// with `SH0S`), which the ESPHome package replaces with an erased one.
+#[must_use]
+pub fn boot_state() -> Vec<u8> {
+    let mut state = b"SH0S".to_vec();
+    state.resize(OTADATA.1, 0xFF);
+    state
+}
+
 fn part(src: &str, data: &[u8], location: (&str, serde_json::Value)) -> serde_json::Value {
     let mut part = serde_json::json!({
         "type": "x", "src": src, "size": data.len(), "cs_sha256": hex::encode(Sha256::digest(data))
@@ -164,7 +179,8 @@ impl Fixture {
             "parts": {
                 "boot": boot,
                 "pt": part("partitions.bin", &self.stock_table, ("addr", TABLE_ADDR.into())),
-                "otadata": { "type": "otadata", "ptn": "otadata", "fill": 255, "size": 0x2000 },
+                "otadata": part("boot_state.bin", &boot_state(), ("ptn", "otadata".into())),
+                "nvs": { "type": "nvs", "ptn": "nvs", "fill": 255, "size": 0xC000 },
                 "app": part("S1G3.bin", &self.stock_app, ("ptn", "app_0".into())),
                 "fs": part("fs.bin", &[0xA5; 256], ("ptn", "fs_0".into())),
             }
@@ -177,6 +193,7 @@ impl Fixture {
         vec![
             ("bootloader.bin", self.stock_bootloader.clone()),
             ("partitions.bin", self.stock_table.clone()),
+            ("boot_state.bin", boot_state()),
             ("S1G3.bin", self.stock_app.clone()),
             ("fs.bin", vec![0xA5; 256]),
         ]
@@ -192,10 +209,9 @@ impl Fixture {
     /// application, gaps filled with 0xFF.
     #[must_use]
     pub fn factory(&self) -> Vec<u8> {
-        let app_offset = 0x1_0000;
-        let mut out = vec![0xFF; app_offset + self.app.len()];
+        let mut out = vec![0xFF; APP_ADDR + self.app.len()];
         for (offset, data) in
-            [(BOOT_ADDR, &self.bootloader), (TABLE_ADDR, &self.table), (app_offset, &self.app)]
+            [(BOOT_ADDR, &self.bootloader), (TABLE_ADDR, &self.table), (APP_ADDR, &self.app)]
         {
             for (slot, byte) in out.iter_mut().skip(offset).zip(data.iter()) {
                 *slot = *byte;

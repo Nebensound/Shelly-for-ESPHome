@@ -73,7 +73,18 @@ for these generations is being built in the milestone
 ESPHome factory image against the official update package of the device:
 bootloader settings and chip, the partition table (build ESPHome with the
 device's stock partition table), an erased otadata area and the application
-in `app_0`. `<APP>` is the app name `probe` shows, e.g. `S1G3`. The tool
+in `app_0`. It then builds the package `flash` will send, in memory only
+(it contains the Wi-Fi credentials of the firmware): the official package
+with ESPHome's application and bootloader, an erased otadata and the
+bootloader `min_version` raised to 1.0.9, so the stock installer writes
+ESPHome's bootloader. Only apps whose flash layout the tool knows are built
+(the layout of the current stable firmware, 2.2.0 for most models); Shelly
+changes layouts between releases, and a package with another one is refused.
+Build ESPHome with the partition table of the stable firmware the device
+runs. The findings about bootloader, slots and `min_version` come from
+[Free-Shelly OTA](https://github.com/oxynatOr/free-shelly-ota) (Apache-2.0),
+which this tool implements independently. `<APP>` is the app name `probe`
+shows, e.g. `S1G3`. The tool
 downloads the current stable package from Shelly's update service, checks its
 SHA-256 and keeps it in the user's cache directory
 (`shelly2esphome/packages/<APP>/<version>.zip`); a cached package is checked

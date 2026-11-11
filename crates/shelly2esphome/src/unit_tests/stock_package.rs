@@ -14,7 +14,7 @@ fn reads_an_official_package() {
     assert_eq!(package.part("boot").and_then(|part| part.min_version.as_deref()), Some("1.0.2"));
     assert_eq!(package.file("app"), Some(fixture.stock_app.as_slice()));
     // Filled parts have no file.
-    assert_eq!(package.file("otadata"), None);
+    assert_eq!(package.file("nvs"), None);
     assert_eq!(package.file("missing"), None);
     assert!(package.app().is_app);
     assert!(!package.bootloader().is_app);

@@ -65,7 +65,20 @@ live here were removed on purpose; do not reintroduce them.
   - `esp32/` reads ESP32 images, ESP-IDF partition tables and the merged
     factory image ESPHome builds; `stock_package.rs` reads the official Gen2+
     update package (the manifest stays as JSON so unknown fields survive a
-    rebuild). Both work on bytes only.
+    rebuild; `serde_json` keeps the key order, so the parts keep the order
+    the installer gets them in). Both work on bytes only.
+  - `profile.rs` holds what the official package cannot tell: the known
+    flash layout of each Gen2/Gen3 app (chip, partition table address,
+    `app_0` size), read from its current stable package, and the bootloader
+    `min_version` 1.0.9 (found by Free-Shelly OTA, Apache-2.0). A package
+    with another layout is refused; a new stable release with a new layout
+    needs its profile updated.
+  - `esphome_package.rs` builds the package that installs ESPHome through
+    the stock updater: the official package with ESPHome's application and
+    bootloader from the factory image, an erased otadata and the raised
+    `min_version`; every other part and field stays as shipped. It contains
+    the user's Wi-Fi credentials and exists only in memory; the result must
+    pass `StockPackage::parse` before it is returned.
   - `rpc.rs` holds what Gen2+ devices report about themselves (generation,
     model ID, app name, firmware version, Wi-Fi). Gen2+ devices are only read
     so far; `flash` refuses them before any change.
