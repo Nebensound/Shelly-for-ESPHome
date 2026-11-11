@@ -211,6 +211,46 @@ async fn probes_later_generations_and_refuses_to_flash_them() {
     assert_eq!(seen.lock().unwrap().len(), 2);
 }
 
+#[tokio::test]
+async fn checks_a_factory_image_against_the_official_package() {
+    use shelly2esphome::esp32::synthetic::{Fixture, LAYOUT, table};
+    let settings = Settings::default();
+    let fixture = Fixture::default();
+    let package = write_temp("S1G3.zip", &fixture.package());
+    let factory = write_temp("firmware.factory.bin", &fixture.factory());
+
+    let ok = run(&["check", &factory, "--package", &package], &settings).await;
+    assert_eq!(ok.code, ExitCode::SUCCESS, "{}", ok.err);
+    assert!(ok.out.contains(
+        "ESP32-C3 factory image for S1G3 2.0.3; bootloader, partition table and application \
+         match the official package."
+    ));
+    assert!(
+        ok.out.contains(&format!("Application: {} of 65536 bytes in app_0.", fixture.app.len()))
+    );
+    assert!(ok.out.contains("Gen2/Gen3 devices cannot be flashed yet."));
+    assert!(!ok.out.contains("Note:"));
+
+    let other = Fixture { table: table(&LAYOUT[..6]), ..Fixture::default() };
+    let factory_other = write_temp("other.factory.bin", &other.factory());
+    let noted = run(&["check", &factory_other, "--package", &package], &settings).await;
+    assert_eq!(noted.code, ExitCode::SUCCESS, "{}", noted.err);
+    assert!(noted.out.contains("Note: the partition table differs in shelly: missing"));
+
+    let missing = run(&["check", &factory, "--package", "/nonexistent.zip"], &settings).await;
+    assert!(missing.err.contains("cannot read /nonexistent.zip"));
+    let not_a_package = run(&["check", &factory, "--package", &factory], &settings).await;
+    assert!(not_a_package.err.contains("is no usable official package"));
+    let gone = run(&["check", "/nonexistent.bin", "--package", &package], &settings).await;
+    assert!(gone.err.contains("cannot read /nonexistent.bin"));
+    let mut damaged = Fixture::default();
+    damaged.bootloader[0] = 0;
+    let broken = write_temp("broken.factory.bin", &damaged.factory());
+    let unsuitable = run(&["check", &broken, "--package", &package], &settings).await;
+    assert_eq!(unsuitable.code, ExitCode::FAILURE);
+    assert!(unsuitable.err.contains("does not suit S1G3: no valid bootloader at 0x0"));
+}
+
 fn scan_settings(port: u16) -> Settings {
     Settings {
         scan: ScanOptions { port, timeout: Duration::from_millis(300), ..ScanOptions::default() },

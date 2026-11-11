@@ -59,6 +59,11 @@ the app slot the stock firmware runs from, and whether it is a beta firmware
 (betas can change the flash layout). It only sends reading requests. Support
 for these generations is being built in the milestone
 [Gen2/Gen3 over the air](https://github.com/Nebensound/Shelly-for-ESPHome/milestone/1).
+`shelly2esphome check firmware.factory.bin --package <official.zip>` already
+checks an ESPHome factory image against the official update package of the
+device: bootloader settings and chip, the partition table (build ESPHome with
+the device's stock partition table), an erased otadata area and the
+application in `app_0`.
 
 ## Usage
 

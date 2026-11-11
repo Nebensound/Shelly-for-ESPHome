@@ -19,11 +19,13 @@ use crate::{
     backup,
     device::{Credentials, DeviceClient, Firmware},
     discover::{self, Network, ScanOptions},
+    esp32::factory::{APP_PARTITION, FactoryImage},
     flash::{self, FlashOptions, Reporter, local_ip_towards},
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
     rpc::WifiSignal,
+    stock_package::StockPackage,
 };
 
 /// Flash a self-built ESPHome firmware onto Shelly Gen1 devices over the air.
@@ -63,8 +65,13 @@ enum Command {
     },
     /// Check a firmware file without touching any device.
     Check {
-        /// ESPHome `firmware.bin` (uncompressed, ESP8266).
+        /// ESPHome `firmware.bin` (uncompressed, ESP8266), or with --package the
+        /// `firmware.factory.bin` of a Gen2/Gen3 build.
         firmware: PathBuf,
+        /// Official update package of the Gen2/Gen3 device; checks a factory
+        /// image against it.
+        #[arg(long)]
+        package: Option<PathBuf>,
     },
     /// Replace the stock firmware (or a waiting migration firmware) with ESPHome.
     Flash {
@@ -335,6 +342,38 @@ async fn backup_command(
     Ok(())
 }
 
+fn check_factory(
+    firmware: &Path,
+    package: &Path,
+    terminal: &mut Terminal<'_>,
+) -> anyhow::Result<()> {
+    let read = |path: &Path| {
+        std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))
+    };
+    let package_bytes = read(package)?;
+    let stock = StockPackage::parse(&package_bytes)
+        .with_context(|| format!("{} is no usable official package", package.display()))?;
+    let (factory, warnings) = FactoryImage::check(read(firmware)?, &stock)
+        .with_context(|| format!("{} does not suit {}", firmware.display(), stock.name()))?;
+    let slot = factory.partition_table().find(APP_PARTITION);
+    let _ = writeln!(
+        terminal.out,
+        "{}: {} factory image for {} {}; bootloader, partition table and application match \
+         the official package.\nApplication: {} of {} bytes in {APP_PARTITION}.",
+        firmware.display(),
+        factory.app().chip,
+        stock.name(),
+        stock.version(),
+        factory.app().len,
+        slot.map_or(0, |slot| slot.size),
+    );
+    for warning in warnings {
+        let _ = writeln!(terminal.out, "Note: the partition table differs in {warning}.");
+    }
+    let _ = writeln!(terminal.out, "Gen2/Gen3 devices cannot be flashed yet.");
+    Ok(())
+}
+
 fn check(firmware: &Path, terminal: &mut Terminal<'_>) -> anyhow::Result<()> {
     let image = read_image(firmware)?;
     let _ = writeln!(
@@ -358,7 +397,10 @@ async fn execute(
         Command::Backup { host, auth, output } => {
             backup_command(&host, auth, &output, terminal).await
         }
-        Command::Check { firmware } => check(&firmware, terminal),
+        Command::Check { firmware, package: None } => check(&firmware, terminal),
+        Command::Check { firmware, package: Some(package) } => {
+            check_factory(&firmware, &package, terminal)
+        }
         Command::Version => {
             let _ = write!(terminal.out, "{}", Cli::command().render_version());
             Ok(())
