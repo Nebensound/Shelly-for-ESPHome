@@ -156,7 +156,9 @@ impl Submission {
         Ok(submission)
     }
 
-    fn get(&self, id: &str) -> &str {
+    /// The value of the coded field `id`; empty for an unknown ID.
+    #[must_use]
+    pub fn get(&self, id: &str) -> &str {
         self.fields.iter().find(|(known, _)| *known == id).map_or("", |(_, value)| value)
     }
 
@@ -354,24 +356,26 @@ pub fn intake(issue: u64, body: &str, author: &Author, root: &Path) -> anyhow::R
     Ok(Decision { verdict, reasons, file: Some(path) })
 }
 
-/// Checks every report file below `root`: its name is its issue number and
-/// it passes the checks a submitted report passes. Returns how many there are.
+/// Reads and checks every report file below `root`: its name is its issue
+/// number and it passes the checks a submitted report passes. Sorted by file
+/// name; none if the directory does not exist yet.
 ///
 /// # Errors
 ///
 /// Every file that fails, with the reason.
-pub fn check_reports(root: &Path) -> anyhow::Result<usize> {
+pub fn load_reports(root: &Path) -> anyhow::Result<Vec<Submission>> {
     let dir = root.join(REPORT_DIR);
     let listed = std::fs::read_dir(&dir).and_then(|entries| {
         entries.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()
     });
     let mut paths = match listed {
         Ok(paths) => paths,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
     };
     paths.sort();
     let mut failures = Vec::new();
+    let mut reports = Vec::new();
     for path in &paths {
         let checked = std::fs::read_to_string(path).map_err(anyhow::Error::from).and_then(|text| {
             let submission = Submission::from_file(&text)?;
@@ -382,13 +386,24 @@ pub fn check_reports(root: &Path) -> anyhow::Result<usize> {
             if path.file_name() != submission.path().file_name() {
                 bail!("the file is not named after its issue {}", submission.issue);
             }
-            Ok(())
+            Ok(submission)
         });
-        if let Err(error) = checked {
-            failures.push(format!("{}: {error:#}", path.display()));
+        match checked {
+            Ok(submission) => reports.push(submission),
+            Err(error) => failures.push(format!("{}: {error:#}", path.display())),
         }
     }
-    if failures.is_empty() { Ok(paths.len()) } else { bail!(failures.join("\n")) }
+    if failures.is_empty() { Ok(reports) } else { bail!(failures.join("\n")) }
+}
+
+/// Checks every report file below `root` (see [`load_reports`]) and returns
+/// how many there are.
+///
+/// # Errors
+///
+/// Every file that fails, with the reason.
+pub fn check_reports(root: &Path) -> anyhow::Result<usize> {
+    load_reports(root).map(|reports| reports.len())
 }
 
 #[cfg(test)]

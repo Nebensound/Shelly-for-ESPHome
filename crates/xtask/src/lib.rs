@@ -3,6 +3,7 @@
 //! so the tool and the workflows cannot drift apart.
 
 pub mod intake;
+pub mod table;
 
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -49,6 +50,12 @@ enum Task {
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
+    /// Write the device table of the report files into the README.
+    DeviceTable {
+        /// The repository root.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
 }
 
 /// Runs the task that `args` (with the program name first) names and writes
@@ -76,6 +83,12 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> anyhow::Result<()> {
         Task::CheckReports { root } => {
             format!("{} device reports are valid", intake::check_reports(&root)?)
         }
+        Task::DeviceTable { root } => if table::update_readme(&root)? {
+            "the device table changed"
+        } else {
+            "the device table is up to date"
+        }
+        .to_owned(),
     };
     out.write_all(format!("{output}\n").as_bytes())?;
     Ok(())

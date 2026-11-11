@@ -95,6 +95,8 @@ fn names_what_went_wrong() {
         (intake(&no_issue, root_text), "the event names no issue"),
         (run_with(&["check-reports", "--root", &a_file]), "reading "),
         (run_with(&["unknown-task"]), "error: unrecognized subcommand"),
+        // No README in this root.
+        (run_with(&["device-table", "--root", root_text]), "reading "),
     ] {
         let error_text = format!("{:#}", result.expect_err(error));
         assert!(error_text.starts_with(error), "{error_text}");
@@ -127,5 +129,20 @@ fn reports_a_failed_write() {
     let args: Vec<OsString> = args.iter().map(OsString::from).collect();
     let error = run(&args, &mut Closed).expect_err("closed");
     assert_eq!(format!("{error:#}"), "closed");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn says_whether_the_device_table_changed() {
+    let root = scratch("run-table");
+    let readme = format!("{}\nold\n{}\n", table::START, table::END);
+    std::fs::write(root.join("README.md"), readme).expect("README");
+    let root_text = root.to_str().expect("UTF-8");
+    let (result, out) = run_with(&["device-table", "--root", root_text]);
+    result.expect("written");
+    assert_eq!(out, "the device table changed\n");
+    let (result, out) = run_with(&["device-table", "--root", root_text]);
+    result.expect("unchanged");
+    assert_eq!(out, "the device table is up to date\n");
     let _ = std::fs::remove_dir_all(root);
 }

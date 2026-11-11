@@ -24,7 +24,7 @@ pub fn report() -> Report {
 
 /// The coded fields of `report()` with `id` set to `value` and a code over
 /// them, so only the changed value can be wrong.
-fn coded_with(id: &str, value: &str) -> Vec<(&'static str, String)> {
+pub fn coded_with(id: &str, value: &str) -> Vec<(&'static str, String)> {
     let mut fields = report().fields();
     for field in &mut fields {
         if field.0 == id {
