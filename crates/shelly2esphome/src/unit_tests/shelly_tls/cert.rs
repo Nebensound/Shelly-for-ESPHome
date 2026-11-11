@@ -20,6 +20,7 @@ fn reads_shellys_root_and_server_certificate() {
     let leaf = Certificate::parse(LEAF).expect("leaf");
     assert_eq!(leaf.issuer, root.subject);
     assert_eq!(leaf.common_names, ["updates.shelly.cloud"]);
+    assert!(!leaf.has_extensions);
     // sha256WithRSAEncryption.
     assert_eq!(leaf.signature_algorithm, [6, 9, 42, 134, 72, 134, 247, 13, 1, 1, 11, 5, 0]);
     // The signed bytes follow the outer header unchanged.
@@ -38,6 +39,7 @@ fn reads_version_3_and_generalized_time() {
     let cert = Certificate::parse(&der).expect("v3");
     assert_eq!(cert.not_after, 2_524_608_000);
     assert_eq!(cert.common_names, ["updates.shelly.cloud"]);
+    assert!(cert.has_extensions);
     assert_eq!(cert.issuer, &ca.name[2..]);
 }
 
@@ -83,12 +85,19 @@ fn reads_both_time_formats() {
     assert_eq!(time_of(UTC_TIME, b"991231235959Z"), Some(946_684_799));
     assert_eq!(time_of(UTC_TIME, b"700301000000Z"), Some(5_097_600));
     assert_eq!(time_of(GENERALIZED_TIME, b"20240229120000Z"), Some(1_709_208_000));
+    // 2000 is a leap year (divisible by 400).
+    assert_eq!(time_of(GENERALIZED_TIME, b"20000229000000Z"), Some(951_782_400));
     for (tag, bad) in [
         (UTC_TIME, &b"Z"[..]),                  // too short for a year
         (UTC_TIME, b"2001010000Z"),             // too short
         (UTC_TIME, b"200101000000"),            // no Z
         (UTC_TIME, b"2001010000AAZ"),           // not digits
         (UTC_TIME, b"201301000000Z"),           // month 13
+        (UTC_TIME, b"200001000000Z"),           // month 0
+        (GENERALIZED_TIME, b"20260231000000Z"), // February 31st
+        (GENERALIZED_TIME, b"20250229000000Z"), // no leap year
+        (GENERALIZED_TIME, b"21000229000000Z"), // divisible by 100
+        (GENERALIZED_TIME, b"20250431000000Z"), // April 31st
         (UTC_TIME, b"200100000000Z"),           // day 0
         (UTC_TIME, b"200101240000Z"),           // hour 24
         (UTC_TIME, b"200101006000Z"),           // minute 60
