@@ -50,7 +50,9 @@ impl std::fmt::Display for BootloaderVersion {
 /// of every profile.
 pub const BOOT_MIN_VERSION: BootloaderVersion = BootloaderVersion { major: 1, minor: 0, patch: 9 };
 
-/// The flash layout of one app's current stable firmware.
+/// The flash layout of one app's current stable firmware. App name and
+/// firmware version are plain text: `AppName` and `FirmwareVersion` hold a
+/// `String` and cannot be built in a `const`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Profile {
     app: &'static str,
@@ -63,8 +65,9 @@ pub struct Profile {
 const ESP32: ChipId = ChipId(0x0000);
 const ESP32_C3: ChipId = ChipId(0x0005);
 
-/// `(app, firmware, chip, table address, app slot size)` as a [`Profile`]; a
-/// macro rather than a `const fn`, which would only run at compile time.
+/// `(app, firmware, chip, table address, app slot size)` as a [`Profile`]. A
+/// macro rather than a `const fn`: a `const fn` evaluated only at compile
+/// time never runs under coverage instrumentation and counts as uncovered.
 macro_rules! profiles {
     ($(($app:literal, $firmware:literal, $chip:ident, $table:literal, $slot:literal)),* $(,)?) => {
         [$(Profile {

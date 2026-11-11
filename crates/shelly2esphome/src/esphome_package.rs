@@ -54,13 +54,25 @@ pub enum BuildError {
     Verify(StockPackageError),
 }
 
-/// An ESPHome package, verified like an official one.
-#[derive(Debug, Clone)]
+/// An ESPHome package, verified like an official one. It holds the user's
+/// Wi-Fi credentials, so `Debug` shows its size but not its bytes, and the
+/// type is not `Clone`.
 pub struct EsphomePackage {
     bytes: Vec<u8>,
     profile: &'static Profile,
     factory: FactoryImage,
     official_boot_version: BootloaderVersion,
+}
+
+impl std::fmt::Debug for EsphomePackage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EsphomePackage")
+            .field("len", &self.bytes.len())
+            .field("app", &self.profile.app())
+            .field("official_boot_version", &self.official_boot_version)
+            .finish_non_exhaustive()
+    }
 }
 
 /// `part`'s `size` and `cs_sha256` for `data`.

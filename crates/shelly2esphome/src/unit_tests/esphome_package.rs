@@ -30,6 +30,15 @@ fn replaces_app_bootloader_and_otadata_and_keeps_the_rest() {
     assert_eq!(package.profile().app(), "S1G3");
     assert_eq!(package.official_boot_version().to_string(), "1.0.2");
     assert_eq!(package.factory().app_bytes(), fixture.app.as_slice());
+    // The bytes hold the Wi-Fi credentials: Debug leaves them out.
+    assert_eq!(
+        format!("{package:?}"),
+        format!(
+            "EsphomePackage {{ len: {}, app: \"S1G3\", official_boot_version: BootloaderVersion \
+             {{ major: 1, minor: 0, patch: 2 }}, .. }}",
+            package.bytes().len()
+        )
+    );
 
     // The built package passes the checks of an official one: every size and
     // SHA-256 in the manifest matches its file.

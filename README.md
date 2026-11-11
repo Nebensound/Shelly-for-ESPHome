@@ -80,8 +80,9 @@ bootloader `min_version` raised to 1.0.9, so the stock installer writes
 ESPHome's bootloader. Only apps whose flash layout the tool knows are built
 (the layout of the current stable firmware, 2.2.0 for most models); Shelly
 changes layouts between releases, and a package with another one is refused.
-Build ESPHome with the partition table of the stable firmware the device
-runs. The findings about bootloader, slots and `min_version` come from
+Build ESPHome with the partition table of the current stable firmware (the
+package `check` downloads); if the device runs an older firmware, update it
+officially first. The findings about bootloader, slots and `min_version` come from
 [Free-Shelly OTA](https://github.com/oxynatOr/free-shelly-ota) (Apache-2.0),
 which this tool implements independently. `<APP>` is the app name `probe`
 shows, e.g. `S1G3`. The tool

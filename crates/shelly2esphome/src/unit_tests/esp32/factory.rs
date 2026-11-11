@@ -20,6 +20,10 @@ fn accepts_a_matching_factory_image() {
     assert_eq!(factory.app_bytes(), fixture.app.as_slice());
     assert!(factory.app().is_app);
     assert!(factory.partition_table().find("app_0").is_some());
+    // The bytes hold the Wi-Fi credentials: Debug leaves them out.
+    let shown = format!("{factory:?}");
+    assert!(shown.starts_with(&format!("FactoryImage {{ len: {}, ", fixture.factory().len())));
+    assert!(shown.ends_with(", .. }") && shown.len() < 400, "{shown}");
 
     // A differing non-critical partition only warns.
     let mut other = Fixture::default();
