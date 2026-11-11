@@ -163,9 +163,14 @@ jobs:
           git switch --create "$branch"
           git add "$file"
           # A reopened issue whose report was merged already, edited only in
-          # its notes: nothing to add.
+          # its notes or back to the merged fields: nothing to add, and a pull
+          # request of an earlier edit must not overwrite main.
           if git diff --cached --quiet; then
             echo "main already carries this report"
+            pr="$(report_pr "$branch")"
+            if [ -n "$pr" ]; then
+              gh pr close "$pr" --delete-branch --comment "main carries the report of #$ISSUE already."
+            fi
             echo "on_main=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
