@@ -331,6 +331,8 @@ Still bring a branch up to date with `main` before merging: a version computed
 before another merge can collide with it, and the run on `main` then fails
 instead of releasing. As long as branches are merged up to date, every merge
 gets a new version, so a protocol change always ships with its own packages.
+The one exception are device reports: a pull request that only adds files in
+`docs/device-reports/` keeps its version, and its merge is not released.
 
 Dependabot opens weekly pull requests for the Cargo dependencies and the GitHub
 Actions (`.github/dependabot.yml`). They get their version commit like every
