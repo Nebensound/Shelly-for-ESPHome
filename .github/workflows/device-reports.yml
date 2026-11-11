@@ -162,6 +162,13 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch --create "$branch"
           git add "$file"
+          # A reopened issue whose report was merged already, edited only in
+          # its notes: nothing to add.
+          if git diff --cached --quiet; then
+            echo "main already carries this report"
+            echo "on_main=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           git commit --quiet --message "docs: add the device report of #$ISSUE"
           pr="$(report_pr "$branch")"
           auto=false
@@ -240,13 +247,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERDICT: ${{ steps.intake.outputs.verdict }}
           PR: ${{ steps.pr.outputs.number }}
+          ON_MAIN: ${{ steps.pr.outputs.on_main }}
         run: |
           set -euo pipefail
           DECISION="$RUNNER_TEMP/intake/decision.json"
+          if [ "$ON_MAIN" = true ]; then
+            VERDICT=on-main
+          fi
           {
             echo "Thanks for the report!"
             echo
             case "$VERDICT" in
+              on-main)
+                echo "This report is part of the device table already." ;;
               accept)
                 echo "It passed every check and is added to the device table with #$PR." ;;
               review)
