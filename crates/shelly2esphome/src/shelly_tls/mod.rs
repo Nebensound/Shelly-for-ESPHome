@@ -8,7 +8,7 @@
 //! program, and checks:
 //!
 //! - the server certificate is signed directly by that root (certificates
-//!   the server sends along are ignored),
+//!   the server sends along are ignored) and has no extensions,
 //! - the root and the server certificate are valid now,
 //! - the server certificate's common name is the requested host,
 //! - the handshake is signed with the server certificate's key.
@@ -103,6 +103,11 @@ pub enum TlsError {
     /// The server's certificate is not issued by the root.
     #[error("the server certificate is not issued by Shelly's root certificate")]
     UnknownIssuer,
+    /// The server's certificate has extensions. Shelly's have none, and
+    /// extensions can restrict a certificate (for example to client
+    /// authentication), which this tool does not interpret.
+    #[error("the server certificate has extensions, which Shelly's certificates do not have")]
+    Extensions,
     /// No supported algorithm matches the key and signature.
     #[error("the signature algorithm of the server is not supported")]
     UnsupportedAlgorithm,
@@ -211,6 +216,9 @@ impl Verifier {
             cert.tbs,
             cert.signature,
         )?;
+        if cert.has_extensions {
+            return Err(TlsError::Extensions);
+        }
         if !(cert.not_before..=cert.not_after).contains(&now) {
             return Err(TlsError::NotValidNow {
                 from: Timestamp(cert.not_before),
@@ -228,8 +236,9 @@ impl Verifier {
     fn handshake(
         &self,
         message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &DigitallySignedStruct,
+        cert: &[u8],
+        scheme: SignatureScheme,
+        signature: &[u8],
         tls13: bool,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
         // rustls verifies the certificate before the handshake signature, so
@@ -241,18 +250,15 @@ impl Verifier {
                     .algorithms
                     .mapping
                     .iter()
-                    .filter(|(scheme, _)| {
-                        *scheme == dss.scheme && (!tls13 || TLS13_SCHEMES.contains(scheme))
+                    .filter(|(offered, _)| {
+                        *offered == scheme && (!tls13 || TLS13_SCHEMES.contains(offered))
                     })
-                    .flat_map(|(_, algorithms)| algorithms.iter());
-                verify(
-                    candidates,
-                    cert.key_algorithm,
-                    None,
-                    cert.public_key,
-                    message,
-                    dss.signature(),
-                )
+                    // TLS 1.3 binds an ECDSA scheme to one curve: only the
+                    // first algorithm; the cross-curve ones are TLS 1.2 only.
+                    .flat_map(|(_, algorithms)| {
+                        algorithms.iter().take(if tls13 { 1 } else { algorithms.len() })
+                    });
+                verify(candidates, cert.key_algorithm, None, cert.public_key, message, signature)
             })
             .map(|()| HandshakeSignatureValid::assertion())
             .map_err(rustls_error)
@@ -279,7 +285,7 @@ impl ServerCertVerifier for Verifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        self.handshake(message, cert, dss, false)
+        self.handshake(message, cert, dss.scheme, dss.signature(), false)
     }
 
     fn verify_tls13_signature(
@@ -288,7 +294,7 @@ impl ServerCertVerifier for Verifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        self.handshake(message, cert, dss, true)
+        self.handshake(message, cert, dss.scheme, dss.signature(), true)
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {

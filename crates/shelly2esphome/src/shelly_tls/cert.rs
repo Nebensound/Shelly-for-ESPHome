@@ -5,9 +5,8 @@
 //! only in the subject's common name. General-purpose verifiers (webpki,
 //! the platform verifiers) refuse those, so this reader accepts version 1 and
 //! keeps the signed bytes exactly as received. It checks structure only;
-//! signatures, validity and names are checked by the caller. Extensions of
-//! version 3 certificates are skipped, not interpreted: the only trusted
-//! issuer is Shelly's root, which signs Shelly's own server certificates.
+//! signatures, validity and names are checked by the caller. Extensions are
+//! not interpreted; the caller refuses certificates that have any.
 
 use std::ops::Range;
 
@@ -87,8 +86,13 @@ fn time(der: &mut Der<'_>) -> Option<u64> {
     let field = |range: Range<usize>| digits[range].parse::<i64>().unwrap_or_default();
     let (year, month, day) = (field(0..4), field(4..6), field(6..8));
     let (hour, minute, second) = (field(8..10), field(10..12), field(12..14));
-    let plausible = (1..=12).contains(&month)
-        && (1..=31).contains(&day)
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_days = [31, 28 + i64::from(leap), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    // An impossible date (February 31st) is malformed, not March 3rd.
+    let plausible = usize::try_from(month - 1)
+        .ok()
+        .and_then(|index| month_days.get(index))
+        .is_some_and(|last| (1..=*last).contains(&day))
         && hour < 24
         && minute < 60
         && second < 60;
@@ -147,6 +151,8 @@ pub(crate) struct Certificate<'a> {
     pub public_key: &'a [u8],
     /// The subject's common names.
     pub common_names: Vec<String>,
+    /// Whether the certificate has an extensions field.
+    pub has_extensions: bool,
 }
 
 impl<'a> Certificate<'a> {
@@ -177,6 +183,7 @@ impl<'a> Certificate<'a> {
         key_info.end()?;
         fields.skip(ISSUER_UNIQUE_ID)?;
         fields.skip(SUBJECT_UNIQUE_ID)?;
+        let has_extensions = fields.0.first() == Some(&EXTENSIONS);
         fields.skip(EXTENSIONS)?;
         fields.end()?;
 
@@ -191,6 +198,7 @@ impl<'a> Certificate<'a> {
             key_algorithm,
             public_key,
             common_names: common_names(subject)?,
+            has_extensions,
         })
     }
 }

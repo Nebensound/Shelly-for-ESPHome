@@ -2,10 +2,14 @@
 
 use std::{error::Error as _, net::SocketAddr, time::Duration};
 
+use ::ring::{
+    rand::SystemRandom,
+    signature::{ECDSA_P384_SHA384_ASN1_SIGNING, EcdsaKeyPair, KeyPair},
+};
 use rustls::{
     ServerConfig,
     server::{ClientHello, ResolvesServerCert},
-    sign::CertifiedKey,
+    sign::{CertifiedKey, SigningKey},
     version::{TLS12, TLS13},
 };
 use sha2::{Digest, Sha256};
@@ -69,6 +73,9 @@ fn refuses_other_issuers_keys_and_algorithms() {
     let leaf = ca.issue(&CertSpec::server(HOST));
     assert!(verifier.check(&leaf, HOST, NOW).is_ok());
     assert!(matches!(verifier.check(b"junk", HOST, NOW), Err(TlsError::Malformed)));
+    // Version 3 with an extensions field, signed by the root.
+    let v3 = ca.issue(&CertSpec { v3: true, ..CertSpec::server(HOST) });
+    assert!(matches!(verifier.check(&v3, HOST, NOW), Err(TlsError::Extensions)));
     let stranger = TestCa::new(1, "Other CA").issue(&CertSpec::server(HOST));
     assert!(matches!(verifier.check(&stranger, HOST, NOW), Err(TlsError::UnknownIssuer)));
     // Same name, other key.
@@ -111,6 +118,7 @@ fn names_every_refusal() {
         TlsError::UnknownIssuer.to_string(),
         TlsError::UnsupportedAlgorithm.to_string(),
         TlsError::BadSignature.to_string(),
+        TlsError::Extensions.to_string(),
         TlsError::Client("no TLS".into()).to_string(),
     ];
     assert_eq!(
@@ -121,6 +129,7 @@ fn names_every_refusal() {
             "the server certificate is not issued by Shelly's root certificate",
             "the signature algorithm of the server is not supported",
             "a signature of the server does not match (forged or damaged certificate)",
+            "the server certificate has extensions, which Shelly's certificates do not have",
             "the HTTPS client cannot be built: no TLS",
         ]
     );
@@ -146,11 +155,21 @@ async fn server(
     version: &'static rustls::SupportedProtocolVersion,
     response: &'static str,
 ) -> SocketAddr {
-    let provider = Arc::new(ring::default_provider());
-    let signing = provider
+    let signing = ring::default_provider()
         .key_provider
         .load_private_key(rustls::pki_types::PrivateKeyDer::Pkcs8(private_key(key).into()))
         .expect("key");
+    server_signing_with(cert, signing, version, response).await
+}
+
+/// Like [`server`], signing the handshake with `signing`.
+async fn server_signing_with(
+    cert: Vec<u8>,
+    signing: Arc<dyn SigningKey>,
+    version: &'static rustls::SupportedProtocolVersion,
+    response: &'static str,
+) -> SocketAddr {
+    let provider = Arc::new(ring::default_provider());
     // CertifiedKey::new does not compare certificate and key, so a test can
     // present a certificate with a key it does not hold.
     let certified = Arc::new(CertifiedKey::new(vec![CertificateDer::from(cert)], signing));
@@ -186,7 +205,9 @@ async fn server(
 const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
 
 fn client_for(ca: &TestCa, addr: SocketAddr) -> reqwest::Client {
-    client_with_root(&ca.root(), reqwest::Client::builder().resolve(HOST, addr)).expect("client")
+    // Without proxies: a proxy from the environment would bypass `resolve`.
+    let builder = reqwest::Client::builder().no_proxy().resolve(HOST, addr);
+    client_with_root(&ca.root(), builder).expect("client")
 }
 
 /// The whole error chain of a failed request, which names the TLS refusal.
@@ -268,4 +289,35 @@ fn builds_the_client_with_the_built_in_root() {
         client_with_root(b"junk", reqwest::Client::builder()),
         Err(TlsError::BadRoot)
     ));
+}
+
+#[test]
+fn binds_tls_1_3_ecdsa_schemes_to_their_curve() {
+    let random = SystemRandom::new();
+    let pkcs8 =
+        EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_ASN1_SIGNING, &random).expect("key");
+    let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_ASN1_SIGNING, pkcs8.as_ref(), &random)
+        .expect("key");
+    // id-ecPublicKey with secp384r1.
+    let algorithm = tlv(
+        0x30,
+        &[
+            &[0x06, 0x07, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01][..],
+            &[0x06, 0x05, 0x2B, 0x81, 0x04, 0x00, 0x22],
+        ]
+        .concat(),
+    );
+    let key = tlv(0x03, &[&[0][..], pair.public_key().as_ref()].concat());
+    let ca = TestCa::new(1, "Test CA");
+    let mut fields = tbs_fields(&ca.name, &CertSpec::server(HOST));
+    fields[5] = tlv(0x30, &[algorithm, key].concat());
+    let cert = certificate(&fields, 1);
+    let verifier = Verifier::new(&ca.root()).expect("root");
+    let scheme = SignatureScheme::ECDSA_NISTP256_SHA256;
+    // A P-384 key under the P-256 scheme: TLS 1.2 tries the cross-curve
+    // algorithm (and rejects the junk signature), TLS 1.3 has none for it.
+    let tls12 = verifier.handshake(b"hello", &cert, scheme, b"junk", false).expect_err("junk");
+    assert!(tls12.to_string().contains("a signature of the server does not match"), "{tls12}");
+    let tls13 = verifier.handshake(b"hello", &cert, scheme, b"junk", true).expect_err("curve");
+    assert!(tls13.to_string().contains("algorithm of the server is not supported"), "{tls13}");
 }
