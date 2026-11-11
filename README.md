@@ -53,6 +53,16 @@ Dimmer 2, EM, Bulb, Vintage, Duo, Duo RGBW, i3 and UNI.
 
 Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
 
+### Reported devices
+
+Models that users flashed successfully, from their
+[device reports](#4-report-your-device), with the stock firmware versions
+they started from. The table is updated once a day.
+
+<!-- device-table:start -->
+No device reports yet.
+<!-- device-table:end -->
+
 Shelly Gen2 (ESP32) and Gen3 (ESP32-C3) devices cannot be flashed yet. `list`
 and `probe` already recognise them: `probe` shows model, app, firmware,
 the app slot the stock firmware runs from, and whether it is a beta firmware
@@ -298,8 +308,10 @@ the new one is closed as a duplicate, so each problem is discussed in one place.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-# Repository tasks for CI (crates/xtask), e.g. check the device report files
+# Repository tasks for CI (crates/xtask): check the device report files,
+# write the device table into this README
 cargo xtask check-reports
+cargo xtask device-table
 
 # Migration firmware: host tests of the hardware-independent modules
 pip install -r migration_firmware/requirements.txt   # clang-format, gcovr (pinned)
