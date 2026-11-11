@@ -43,11 +43,9 @@ jobs:
       # Relative to RUNNER_TEMP, outside the checkout.
       DECISION_FILE: decision.json
     steps:
-      # Release tags for the released versions; no credentials while cargo
-      # runs third-party build code.
+      # No credentials while cargo runs third-party build code.
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
@@ -72,15 +70,18 @@ jobs:
       - name: Check the report
         id: intake
         env:
+          GH_TOKEN: ${{ github.token }}
           AGE: ${{ steps.author.outputs.age }}
           RECENT: ${{ steps.author.outputs.recent }}
         run: |
           set -euo pipefail
           DECISION="$RUNNER_TEMP/$DECISION_FILE"
+          # Published releases, not tags: a tag may outlive a failed or
+          # deleted release.
           released=()
           while read -r tag; do
             released+=(--released "${tag#v}")
-          done < <(git tag --list 'v[0-9]*')
+          done < <(gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName')
           cargo xtask report-intake --event "$GITHUB_EVENT_PATH" \
             --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" > "$DECISION"
           cat "$DECISION"
@@ -104,6 +105,17 @@ jobs:
           git switch --create "$branch"
           git add "$file"
           git commit --quiet --message "docs: add the device report of #$ISSUE"
+          pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+          auto=false
+          if [ -n "$pr" ]; then
+            auto="$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+          fi
+          # Before the new revision is pushed: a report that now needs a review
+          # must not merge itself, even if this run stops halfway.
+          if [ "$VERDICT" = review ] && [ "$auto" = true ]; then
+            gh pr merge "$pr" --disable-auto
+            auto=false
+          fi
           # Only a changed report is pushed again; an edit of the notes keeps
           # the branch, its CI run and its review.
           if git fetch --quiet origin "refs/heads/$branch" 2>/dev/null \
@@ -134,7 +146,6 @@ jobs:
             echo
             echo "Closes #$ISSUE"
           } > "$RUNNER_TEMP/pr.md"
-          pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
           if [ -z "$pr" ]; then
             gh pr create --head "$branch" --base main --title "docs: add the device report of #$ISSUE" \
               --body-file "$RUNNER_TEMP/pr.md"
@@ -142,11 +153,9 @@ jobs:
           else
             gh pr edit "$pr" --body-file "$RUNNER_TEMP/pr.md"
           fi
-          auto="$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+          # Only once the accepted revision is complete.
           if [ "$VERDICT" = accept ] && [ "$auto" = false ]; then
             gh pr merge "$pr" --auto --squash
-          elif [ "$VERDICT" = review ] && [ "$auto" = true ]; then
-            gh pr merge "$pr" --disable-auto
           fi
           echo "number=$pr" >> "$GITHUB_OUTPUT"
       # A report that passed before and no longer does after an edit.
