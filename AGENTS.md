@@ -58,6 +58,10 @@ live here were removed on purpose; do not reintroduce them.
     Shelly's own CA and X.509 version 1 certificates, which general-purpose
     verifiers refuse, so it trusts only the root built into the program
     (pinned by SHA-256) and reads the certificates itself (`cert.rs`).
+  - `fetch.rs` gets the current stable official package of an app from the
+    update service through `shelly_tls`, with size limits, the SHA-256 the
+    service announces and the package validation, and caches it as
+    `<app>/<version>.zip`; a cached package passes the same checks.
   - `esp32/` reads ESP32 images, ESP-IDF partition tables and the merged
     factory image ESPHome builds; `stock_package.rs` reads the official Gen2+
     update package (the manifest stays as JSON so unknown fields survive a

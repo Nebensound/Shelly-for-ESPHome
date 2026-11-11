@@ -1,6 +1,8 @@
 //! Simulated Shelly device and helpers shared by the integration tests.
 #![allow(dead_code, missing_docs, clippy::unwrap_used)]
 
+pub mod cloud;
+
 use std::{
     io::{Cursor, Write},
     net::SocketAddr,
@@ -420,9 +422,17 @@ pub async fn raw(response: &'static [u8], connections: usize) -> String {
 }
 
 /// A `host:port` on which nothing listens.
+/// An address nobody listens on. The port stays bound, without listening,
+/// for the whole test process: a port that was only probed and released can
+/// be taken by a test running in parallel, and then answers.
 pub fn closed_port() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let address = listener.local_addr().unwrap();
-    drop(listener);
-    address.to_string()
+    static RESERVED: std::sync::OnceLock<(tokio::net::TcpSocket, String)> =
+        std::sync::OnceLock::new();
+    let (_, address) = RESERVED.get_or_init(|| {
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let address = socket.local_addr().unwrap().to_string();
+        (socket, address)
+    });
+    address.clone()
 }
