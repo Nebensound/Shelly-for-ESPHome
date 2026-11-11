@@ -1,0 +1,282 @@
+name: Device reports
+
+# A device report issue (form device-report.yml, label device-report) becomes
+# a report file in docs/device-reports/ on its own branch and pull request, so
+# reports never conflict with each other and never use up a version (see the
+# version job in ci.yml). `cargo xtask report-intake` decides:
+# - accept: the pull request merges itself once CI passed;
+# - review: the pull request waits for a maintainer, who sees why;
+# - reject: no pull request; a comment names the problems, and the check runs
+#   again when the author edits the issue.
+# Nothing from the issue reaches a shell: the task reads the event file itself,
+# and the steps below use only the issue number, the author's login (passed
+# through the environment) and the task's decision. Two jobs: cargo runs
+# third-party build code, so it runs in a job that can only read; the job that
+# writes never runs cargo and checks what it takes over.
+on:
+  issues:
+    types: [opened, edited]
+
+permissions: {}
+
+# An edit supersedes the check of the previous version of the issue.
+concurrency:
+  group: device-report-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+env:
+  ISSUE: ${{ github.event.issue.number }}
+
+jobs:
+  check:
+    name: Check the report
+    if: >-
+      github.event.issue.state == 'open'
+      && contains(github.event.issue.labels.*.name, 'device-report')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # The task builds the CLI's library, which needs no release packages.
+      SHELLY2ESPHOME_NO_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - name: Look up the author and the releases
+        id: author
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTHOR: ${{ github.event.issue.user.login }}
+          OPENED: ${{ github.event.issue.created_at }}
+        run: |
+          set -euo pipefail
+          created="$(gh api "users/$AUTHOR" --jq .created_at)"
+          age=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
+          since="$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)"
+          query="repo:$GITHUB_REPOSITORY is:issue label:device-report author:$AUTHOR created:>=$since"
+          gh api -X GET search/issues -f q="$query" -f per_page=100 > "$RUNNER_TEMP/search.json"
+          recent="$(jq .total_count "$RUNNER_TEMP/search.json")"
+          # The search index may not know this issue yet; it counts if it was
+          # opened within the day (an edit of an older one does not).
+          listed="$(jq --argjson issue "$ISSUE" '[.items[].number] | index($issue) != null' \
+            "$RUNNER_TEMP/search.json")"
+          if [ "$listed" = false ] && [ "$(date -d "$OPENED" +%s)" -ge "$(date -d "$since" +%s)" ]; then
+            recent=$(( recent + 1 ))
+          fi
+          echo "account age $age days, $recent reports within a day"
+          echo "age=$age" >> "$GITHUB_OUTPUT"
+          echo "recent=$recent" >> "$GITHUB_OUTPUT"
+          # Published releases, not tags: a tag may outlive a failed or
+          # deleted release.
+          gh release list --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' \
+            > "$RUNNER_TEMP/releases.txt"
+      # No token in cargo's environment.
+      - name: Check the report
+        env:
+          AGE: ${{ steps.author.outputs.age }}
+          RECENT: ${{ steps.author.outputs.recent }}
+        run: |
+          set -euo pipefail
+          released=()
+          while read -r tag; do
+            released+=(--released "${tag#v}")
+          done < "$RUNNER_TEMP/releases.txt"
+          mkdir -p "$RUNNER_TEMP/intake"
+          cargo xtask report-intake --event "$GITHUB_EVENT_PATH" \
+            --account-age-days "$AGE" --recent-reports "$RECENT" "${released[@]}" \
+            > "$RUNNER_TEMP/intake/decision.json"
+          cat "$RUNNER_TEMP/intake/decision.json"
+          file="docs/device-reports/$ISSUE.json"
+          if [ -f "$file" ]; then
+            cp "$file" "$RUNNER_TEMP/intake/report.json"
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: intake
+          path: ${{ runner.temp }}/intake/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish the outcome
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the report branch
+      pull-requests: write # open the pull request and enable auto-merge
+      issues: write # comment on the issue
+      actions: write # dispatch CI on the report branch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: intake
+          path: ${{ runner.temp }}/intake
+      # The decision comes from a job that ran third-party code, so only the
+      # expected verdicts and the one expected path are taken over.
+      - name: Read the decision
+        id: intake
+        run: |
+          set -euo pipefail
+          decision="$RUNNER_TEMP/intake/decision.json"
+          verdict="$(jq -r .verdict "$decision")"
+          file="docs/device-reports/$ISSUE.json"
+          case "$verdict" in
+            accept | review)
+              test "$(jq -r .file "$decision")" = "$file"
+              mkdir -p docs/device-reports
+              cp "$RUNNER_TEMP/intake/report.json" "$file" ;;
+            reject) ;;
+            *) echo "::error::unknown verdict"; exit 1 ;;
+          esac
+          echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
+      # Branch and pull request are named after the issue, so an edit of the
+      # issue updates them instead of opening another one.
+      - name: Open or update the pull request
+        id: pr
+        if: steps.intake.outputs.verdict != 'reject'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERDICT: ${{ steps.intake.outputs.verdict }}
+        run: |
+          set -euo pipefail
+          DECISION="$RUNNER_TEMP/intake/decision.json"
+          # The open pull request of the workflow's own branch: a fork may
+          # name its branch the same, and its pull request must not be
+          # merged or closed here.
+          report_pr() {
+            gh pr list --head "$1" --base main --state open \
+              --json number,isCrossRepository \
+              --jq '[.[] | select(.isCrossRepository | not)][0].number // empty'
+          }
+          gh auth setup-git
+          branch="device-report/$ISSUE"
+          file="docs/device-reports/$ISSUE.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --create "$branch"
+          git add "$file"
+          # A reopened issue whose report was merged already, edited only in
+          # its notes or back to the merged fields: nothing to add, and a pull
+          # request of an earlier edit must not overwrite main.
+          if git diff --cached --quiet; then
+            echo "main already carries this report"
+            pr="$(report_pr "$branch")"
+            if [ -n "$pr" ]; then
+              gh pr close "$pr" --delete-branch --comment "main carries the report of #$ISSUE already."
+            fi
+            echo "on_main=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit --quiet --message "docs: add the device report of #$ISSUE"
+          pr="$(report_pr "$branch")"
+          auto=false
+          if [ -n "$pr" ]; then
+            auto="$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+          fi
+          # Before the new revision is pushed: a report that now needs a review
+          # must not merge itself, even if this run stops halfway.
+          if [ "$VERDICT" = review ] && [ "$auto" = true ]; then
+            gh pr merge "$pr" --disable-auto
+            auto=false
+          fi
+          # Only a changed report is pushed again; an edit of the notes keeps
+          # the branch, its CI run and its review.
+          if git fetch --quiet origin "refs/heads/$branch" 2>/dev/null \
+             && git diff --quiet FETCH_HEAD HEAD -- "$file"; then
+            echo "the branch already carries this report"
+            # A run that pushed the branch may have stopped before it
+            # dispatched CI; without a run the pull request lacks its checks.
+            runs="$(gh run list --workflow ci.yml --commit "$(git rev-parse FETCH_HEAD)" \
+              --json databaseId --jq length)"
+            if [ "$runs" = 0 ]; then
+              gh workflow run ci.yml --ref "$branch"
+            fi
+          else
+            git push --force origin "HEAD:refs/heads/$branch"
+            # Pushes with the workflow token start no workflow.
+            gh workflow run ci.yml --ref "$branch"
+          fi
+          {
+            echo "Adds the device report of #$ISSUE as \`$file\`."
+            echo
+            if [ "$VERDICT" = review ]; then
+              echo "This report needs a review before it is merged:"
+              echo
+              jq -r '.reasons[] | "- " + .' "$DECISION"
+            else
+              echo "The report passed every check; the pull request merges itself once CI passed."
+            fi
+            echo
+            echo "Closes #$ISSUE"
+          } > "$RUNNER_TEMP/pr.md"
+          if [ -z "$pr" ]; then
+            gh pr create --head "$branch" --base main --title "docs: add the device report of #$ISSUE" \
+              --body-file "$RUNNER_TEMP/pr.md"
+            pr="$(report_pr "$branch")"
+          else
+            gh pr edit "$pr" --body-file "$RUNNER_TEMP/pr.md"
+          fi
+          # Only once the accepted revision is complete.
+          if [ "$VERDICT" = accept ] && [ "$auto" = false ]; then
+            gh pr merge "$pr" --auto --squash
+          fi
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+      # A report that passed before and no longer does after an edit.
+      - name: Close the pull request of a refused report
+        if: steps.intake.outputs.verdict == 'reject'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The open pull request of the workflow's own branch: a fork may
+          # name its branch the same, and its pull request must not be
+          # merged or closed here.
+          report_pr() {
+            gh pr list --head "$1" --base main --state open \
+              --json number,isCrossRepository \
+              --jq '[.[] | select(.isCrossRepository | not)][0].number // empty'
+          }
+          pr="$(report_pr "device-report/$ISSUE")"
+          if [ -n "$pr" ]; then
+            gh pr close "$pr" --delete-branch --comment "The report of #$ISSUE no longer passes the check."
+          fi
+      - name: Tell the author
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERDICT: ${{ steps.intake.outputs.verdict }}
+          PR: ${{ steps.pr.outputs.number }}
+          ON_MAIN: ${{ steps.pr.outputs.on_main }}
+        run: |
+          set -euo pipefail
+          DECISION="$RUNNER_TEMP/intake/decision.json"
+          if [ "$ON_MAIN" = true ]; then
+            VERDICT=on-main
+          fi
+          {
+            echo "Thanks for the report!"
+            echo
+            case "$VERDICT" in
+              on-main)
+                echo "This report is part of the device table already." ;;
+              accept)
+                echo "It passed every check and is added to the device table with #$PR." ;;
+              review)
+                echo "It is added with #$PR once a maintainer has had a look, because:"
+                echo
+                jq -r '.reasons[] | "- " + .' "$DECISION" ;;
+              *)
+                echo "It cannot be added to the device table yet:"
+                echo
+                jq -r '.reasons[] | "- " + .' "$DECISION"
+                echo
+                echo "Please edit the issue to fix this; the check runs again on every edit." ;;
+            esac
+          } > "$RUNNER_TEMP/comment.md"
+          gh issue comment "$ISSUE" --edit-last --create-if-none --body-file "$RUNNER_TEMP/comment.md"

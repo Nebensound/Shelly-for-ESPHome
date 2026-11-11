@@ -82,6 +82,12 @@ live here were removed on purpose; do not reintroduce them.
   - Unit tests live in `src/unit_tests/<module path>.rs` (included with
     `#[path]`), integration tests in `tests/`; the simulated devices are in
     `tests/common/`. Neither counts as production code for coverage.
+- `crates/xtask/`: repository tasks for CI (`cargo xtask`, not published). It
+  depends on the CLI's library, so the report workflow applies the same rules
+  and the same report code as the tool. `intake.rs` turns a device report issue
+  into `docs/device-reports/<issue>.json` and decides whether it merges by
+  itself, waits for a review or is refused; `.github/workflows/device-reports.yml`
+  runs it. `tests/reports.rs` checks every report file in the repository.
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
   The CLI is MIT; it carries the firmware packages only as data. The published
   crate is `MIT AND GPL-3.0-only` and ships both licenses plus
@@ -129,7 +135,8 @@ live here were removed on purpose; do not reintroduce them.
 8. A device report never carries an address, MAC, device or network name,
    credentials or free text from an error. Its field IDs, the result kinds
    and the report code are the contract with the issue forms and the report
-   workflow; `tests/report_forms.rs` checks the forms.
+   workflow; `tests/report_forms.rs` checks the forms. A pull request that
+   only adds report files keeps its version and is not released (`ci.yml`).
 
 ## Conventions
 

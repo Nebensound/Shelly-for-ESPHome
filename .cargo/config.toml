@@ -1,0 +1,3 @@
+[alias]
+# Repository tasks for CI, e.g. `cargo xtask report-intake --help`.
+xtask = "run --quiet --locked --package xtask --"
