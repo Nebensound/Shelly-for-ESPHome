@@ -24,6 +24,7 @@ use crate::{
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
+    report::{self, DeviceFacts, Report},
     rpc::WifiSignal,
     stock_package::StockPackage,
 };
@@ -151,6 +152,8 @@ struct Console<'t, 'a> {
     last_percent: Option<u64>,
     /// A progress line is open (written without a line break).
     progress_open: bool,
+    /// What `flash` learned about the device, for the device report.
+    facts: DeviceFacts,
 }
 
 impl Reporter for Console<'_, '_> {
@@ -185,6 +188,10 @@ impl Reporter for Console<'_, '_> {
         let input = &mut *self.terminal.input;
         let read = tokio::task::block_in_place(|| input.read_line(&mut answer));
         read.is_ok() && answer.trim().eq_ignore_ascii_case("yes")
+    }
+
+    fn learned(&mut self, facts: &DeviceFacts) {
+        self.facts = facts.clone();
     }
 }
 
@@ -436,16 +443,52 @@ async fn execute(
                 backup_dir: (!no_backup).then_some(backup_dir),
                 ..settings.flash.clone()
             };
-            let mut console =
-                Console { terminal, assume_yes: yes, last_percent: None, progress_open: false };
-            let outcome =
-                flash::run(&host, &client, &image, package.as_ref(), &options, &mut console)
-                    .await?;
-            console.info(&format!(
-                "Done: ESPHome answers on {}. The device now shows up in the ESPHome dashboard.",
-                outcome.esphome_address
-            ));
-            Ok(())
+            let mut console = Console {
+                terminal,
+                assume_yes: yes,
+                last_percent: None,
+                progress_open: false,
+                facts: DeviceFacts::default(),
+            };
+            let started = std::time::Instant::now();
+            let result =
+                flash::run(&host, &client, &image, package.as_ref(), &options, &mut console).await;
+            let report = |result: String, facts: DeviceFacts| {
+                Report { result, facts, duration: started.elapsed() }.url()
+            };
+            match result {
+                Ok(outcome) => {
+                    console.info(&format!(
+                        "Done: ESPHome answers on {}. The device now shows up in the ESPHome \
+                         dashboard.",
+                        outcome.esphome_address
+                    ));
+                    // A run resumed in the migration firmware never saw the
+                    // model, so there is nothing to tell others about.
+                    if console.facts.model.is_some() {
+                        let _ = writeln!(
+                            console.terminal.out,
+                            "Help others with the same device: report that it works. The link \
+                             opens a prefilled GitHub issue with no addresses or names; nothing is \
+                             sent until you submit it:\n{}",
+                            report(report::SUCCESS.to_owned(), console.facts)
+                        );
+                    }
+                    Ok(())
+                }
+                // Only for a device identified as supported: a wrong address
+                // or a refusal is nothing to report.
+                Err(error) => match (error.report_kind(), console.facts.model) {
+                    (Some(kind), Some(_)) => Err(anyhow::anyhow!(
+                        "{:#}\n\nPlease report this failure; it helps to fix it. The link opens a \
+                         prefilled GitHub issue with no addresses or names; nothing is sent until \
+                         you submit it:\n{}",
+                        anyhow::Error::from(error),
+                        report(kind, console.facts)
+                    )),
+                    _ => Err(error.into()),
+                },
+            }
         }
     }
 }

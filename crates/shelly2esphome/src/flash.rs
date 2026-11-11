@@ -19,6 +19,7 @@ use crate::{
     image::FirmwareImage,
     migration::{MigrationPackage, PackageError},
     model::Model,
+    report::{DeviceFacts, PackageSource},
     rpc::{Generation, ModelId},
     server::{FileServer, IMAGE_PATH, PACKAGE_PATH},
 };
@@ -102,6 +103,9 @@ pub trait Reporter {
     fn progress(&mut self, sent_bytes: u64, total_bytes: u64);
     /// Asks before the first change to the device; `false` aborts.
     fn confirm(&mut self, summary: &str) -> bool;
+    /// What the run has learned about the device so far, for the device
+    /// report; called whenever it grows.
+    fn learned(&mut self, _facts: &DeviceFacts) {}
 }
 
 /// Result of a successful run.
@@ -191,6 +195,20 @@ pub enum FlashError {
         /// Slot size reported by the device.
         max_size: u64,
     },
+    /// The image does not fit into the staging slot the migration firmware
+    /// reports. Unlike [`FlashError::ImageTooLarge`], this happens after the
+    /// stock firmware installed the migration firmware.
+    #[error(
+        "the firmware is too large for the staging slot of the migration firmware with {size} \
+         bytes (at most {max_size} bytes). The device waits in the migration firmware and \
+         accepts a smaller image: run the command again with one."
+    )]
+    StagingSlotTooSmall {
+        /// Image size.
+        size: u64,
+        /// Slot size reported by the migration firmware.
+        max_size: u64,
+    },
     /// The migration firmware reported a failed job.
     #[error(
         "the device reports the error \"{0}\". It stays in the migration firmware and accepts \
@@ -214,6 +232,80 @@ pub enum FlashError {
          router (new IP address?)."
     )]
     EsphomeNotSeen(SocketAddr),
+}
+
+/// The error reasons the migration firmware sets (`mg2x_*_result_str` and
+/// `fail()` in `main.c`), besides `http_<status>`. A device report carries
+/// only these, so text a device made up (a MAC, a name) never reaches it;
+/// `tests/report_forms.rs` checks the list against the firmware sources.
+pub const DEVICE_ERROR_REASONS: [&str; 19] = [
+    "alignment",
+    "bad_magic",
+    "connect_failed",
+    "flash",
+    "hash_format",
+    "hash_mismatch",
+    "install_fatal",
+    "install_layout",
+    "install_retryable",
+    "limit",
+    "overflow",
+    "redirect",
+    "relocation_copy",
+    "size_too_large",
+    "size_too_small",
+    "timeout",
+    "truncated",
+    "unknown",
+    "url_scheme",
+];
+
+/// `error` if it is a known reason of the migration firmware, else `other`.
+fn error_token(error: &str) -> &str {
+    let http_status = error
+        .strip_prefix("http_")
+        .is_some_and(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
+    if http_status || DEVICE_ERROR_REASONS.contains(&error) { error } else { "other" }
+}
+
+impl FlashError {
+    /// The result of a device report for this failure, a fixed kind that never
+    /// contains an address or free text; `None` for a deliberate refusal
+    /// before any change (nothing to report).
+    #[must_use]
+    pub fn report_kind(&self) -> Option<String> {
+        let kind = match self {
+            Self::Device(DeviceError::AuthRequired)
+            | Self::Backup(BackupError::Device(DeviceError::AuthRequired))
+            | Self::Package(PackageError::WrongModel { .. })
+            | Self::UnsupportedModel(_)
+            | Self::UnsupportedGeneration { .. }
+            | Self::WeakSignal { .. }
+            | Self::PackageRequired(_)
+            | Self::Aborted
+            | Self::Busy(_)
+            | Self::ImageTooLarge { .. } => return None,
+            Self::Device(DeviceError::Http(_)) => "device-unreachable",
+            Self::Device(DeviceError::Status { .. }) => "device-http-status",
+            Self::Device(DeviceError::Rejected(_)) => "migration-rejected",
+            Self::Device(DeviceError::UnknownFirmware) => "unknown-firmware",
+            Self::Device(DeviceError::UnsupportedProtocol(_)) => "protocol-mismatch",
+            Self::Package(_) => "package-invalid",
+            Self::Backup(_) => "backup-failed",
+            Self::Io(_) => "local-network",
+            Self::PackageNotFetched(_) => "package-not-fetched",
+            Self::MigrationNotReachable => "migration-not-reachable",
+            Self::RelocationFailed(_) => "relocation-failed",
+            Self::DeviceFailed(error) => {
+                return Some(format!("device-failed:{}", error_token(error)));
+            }
+            Self::StagingSlotTooSmall { .. } => "staging-slot-too-small",
+            Self::InstallFatal => "install-fatal",
+            Self::FlashTimeout => "flash-timeout",
+            Self::EsphomeNotSeen(_) => "esphome-not-seen",
+        };
+        Some(kind.to_owned())
+    }
 }
 
 /// Resolves `host` (`ip`, `ip:port`, `name` or `name:port`) to a socket address.
@@ -403,6 +495,19 @@ pub async fn run(
         Firmware::Stock { info, rssi_dbm } => {
             let model = Model::from_device_type(&info.device_type)
                 .ok_or_else(|| FlashError::UnsupportedModel(info.device_type.clone()))?;
+            let mut facts = DeviceFacts {
+                model: Some(model),
+                stock_firmware: Some(info.fw.clone()),
+                rssi_dbm: Some(rssi_dbm),
+                login: Some(info.auth),
+                backup: None,
+                package: Some(if package.is_some() {
+                    PackageSource::File
+                } else {
+                    PackageSource::Embedded
+                }),
+            };
+            reporter.learned(&facts);
             if rssi_dbm < options.min_rssi_dbm && !options.allow_weak_signal {
                 return Err(FlashError::WeakSignal {
                     rssi_dbm,
@@ -435,6 +540,8 @@ pub async fn run(
                 let directory = backup::collect(client).await?.write_to(parent)?;
                 reporter.info(&format!("Stock settings saved to {}", directory.display()));
             }
+            facts.backup = Some(options.backup_dir.is_some());
+            reporter.learned(&facts);
             (Some(package), None)
         }
         Firmware::Newer { info, .. } => {
@@ -485,7 +592,7 @@ pub async fn run(
 
     let image_len = image.len() as u64;
     if image_len > status.max_size {
-        return Err(FlashError::ImageTooLarge { size: image_len, max_size: status.max_size });
+        return Err(FlashError::StagingSlotTooSmall { size: image_len, max_size: status.max_size });
     }
 
     reporter.info(

@@ -1,0 +1,107 @@
+name: "Device report: it works"
+description: "Report a device that shelly2esphome flashed successfully (the tool prints a prefilled link)."
+title: "Device report: "
+labels: [device-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! `shelly2esphome flash` filled in every required field.
+        The report contains no addresses, MAC, device names, network names or credentials.
+        Please do not add any in the notes.
+
+        Valid reports are added to the device table in the README.
+  - type: input
+    id: result
+    attributes:
+      label: Result
+      description: "`success` or the kind of failure."
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: "Device type the stock firmware reported, e.g. `SHSW-25`."
+    validations:
+      required: true
+  - type: input
+    id: generation
+    attributes:
+      label: Generation
+    validations:
+      required: true
+  - type: input
+    id: stock-firmware
+    attributes:
+      label: Stock firmware
+      description: "The stock firmware build the device came from."
+    validations:
+      required: true
+  - type: input
+    id: signal
+    attributes:
+      label: Wi-Fi signal
+    validations:
+      required: true
+  - type: input
+    id: login
+    attributes:
+      label: Login enabled
+      description: "Whether the stock firmware had web authentication enabled."
+    validations:
+      required: true
+  - type: input
+    id: backup
+    attributes:
+      label: Backup
+      description: "Whether the stock settings were backed up."
+    validations:
+      required: true
+  - type: input
+    id: package
+    attributes:
+      label: Migration package
+      description: "`embedded` (built into the tool) or `file` (`--migration`)."
+    validations:
+      required: true
+  - type: input
+    id: tool
+    attributes:
+      label: shelly2esphome version
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Computer
+      description: "Operating system and architecture."
+    validations:
+      required: true
+  - type: input
+    id: duration
+    attributes:
+      label: Duration
+    validations:
+      required: true
+  - type: input
+    id: report-code
+    attributes:
+      label: Report code
+      description: "A check over the fields above; it shows that they come unchanged from the tool."
+    validations:
+      required: true
+  - type: input
+    id: esphome
+    attributes:
+      label: ESPHome version
+      description: "Optional, e.g. 2026.10.2."
+    validations:
+      required: false
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: "Anything worth knowing, e.g. the ESPHome configuration you used."
+    validations:
+      required: false
