@@ -4,9 +4,16 @@
 mod common;
 
 use common::{closed_port, raw, scripted};
-use shelly2esphome::device::{Credentials, DeviceClient, DeviceError, Firmware};
+use shelly2esphome::{
+    device::{Credentials, DeviceClient, DeviceError, Firmware},
+    rpc::WifiSignal,
+};
 
 const STOCK: &str = r#"{"type":"SHSW-PM","mac":"AABBCCDDEEFF","auth":true,"fw":"1.14.0"}"#;
+// Recorded from a Shelly Plug M Gen3 on a beta firmware.
+const GEN3: &str = r#"{"name":"Plug","id":"shellyplugmg3-08927251ca24","mac":"08927251CA24","slot":1,
+"model":"S3PL-30110EU","gen":3,"fw_id":"20261026-125850/2.2.0-beta2-gb8c68b1","ver":"2.2.0-beta2",
+"app":"PlugMG3","auth_en":false,"auth_domain":null}"#;
 const STATUS: &str =
     r#"{"protocol":2,"state":"idle","received":0,"size":0,"max_size":1,"error":""}"#;
 
@@ -161,4 +168,51 @@ async fn start_migration_maps_every_answer() {
 
     let (host, _) = scripted(&[("/rpc/MG2X.Flash", 200, r#"{"started":true}"#)]).await;
     start(host).await.unwrap();
+}
+
+#[tokio::test]
+async fn identify_reads_later_generations_without_changing_them() {
+    let (host, seen) = scripted(&[
+        ("/shelly", 200, GEN3),
+        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"got ip","rssi":-74}"#),
+    ])
+    .await;
+    let Firmware::Newer { info, wifi } = client(&host).identify().await.unwrap() else {
+        panic!("later generation expected");
+    };
+    assert_eq!(info.model.as_str(), "S3PL-30110EU");
+    assert_eq!(info.app.as_str(), "PlugMG3");
+    assert_eq!(info.slot, Some(1));
+    assert!(info.firmware.is_beta());
+    assert_eq!(wifi, WifiSignal::Dbm(-74));
+    // Two reading requests and nothing else.
+    assert_eq!(seen.lock().unwrap().len(), 2);
+
+    // With web authentication the signal stays unknown instead of failing.
+    let (host, _) = scripted(&[("/shelly", 200, GEN3), ("/rpc/Wifi.GetStatus", 401, "")]).await;
+    let Firmware::Newer { wifi, .. } = client(&host).identify().await.unwrap() else {
+        panic!("later generation expected");
+    };
+    assert_eq!(wifi, WifiSignal::LoginRequired);
+
+    let (host, _) = scripted(&[("/shelly", 200, GEN3), ("/rpc/Wifi.GetStatus", 503, "")]).await;
+    let error = client(&host).identify().await.unwrap_err();
+    assert!(matches!(error, DeviceError::Status { endpoint: "/rpc/Wifi.GetStatus", status: 503 }));
+
+    let (host, _) =
+        scripted(&[("/shelly", 200, GEN3), ("/rpc/Wifi.GetStatus", 200, "garbage")]).await;
+    assert!(matches!(client(&host).identify().await, Err(DeviceError::Http(_))));
+
+    // The device answers /shelly and is gone before Wifi.GetStatus.
+    let response: &'static [u8] = Box::leak(
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{GEN3}",
+            GEN3.len()
+        )
+        .into_bytes()
+        .into_boxed_slice(),
+    );
+    let host = raw(response, 1).await;
+    assert!(matches!(client(&host).identify().await, Err(DeviceError::Http(_))));
 }

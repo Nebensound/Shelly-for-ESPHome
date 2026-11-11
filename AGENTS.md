@@ -51,6 +51,9 @@ live here were removed on purpose; do not reintroduce them.
   - `backup.rs` saves the stock settings; `discover.rs` scans networks for
     `list`. Both only send reading requests.
   - `device.rs` holds the HTTP client for the stock and migration firmware.
+  - `rpc.rs` holds what Gen2+ devices report about themselves (generation,
+    model ID, app name, firmware version, Wi-Fi). Gen2+ devices are only read
+    so far; `flash` refuses them before any change.
   - `server.rs` is the local file server.
   - `flash.rs` holds the procedure and its safety checks.
   - `cli.rs` is the console UI (arguments, output, prompts); `main.rs` only

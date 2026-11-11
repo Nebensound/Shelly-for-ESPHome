@@ -153,6 +153,64 @@ async fn probes_the_migration_firmware() {
     assert!(!idle.out.contains("Last error"));
 }
 
+#[tokio::test]
+async fn probes_later_generations_and_refuses_to_flash_them() {
+    let settings = Settings::default();
+    let gen3 = r#"{"id":"shellyplugmg3-x","mac":"08927251CA24","slot":1,"model":"S3PL-30110EU",
+        "gen":3,"ver":"2.2.0-beta2","app":"PlugMG3","auth_en":false}"#;
+    let (host, _) = scripted(&[
+        ("/shelly", 200, gen3),
+        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"got ip","rssi":-74}"#),
+    ])
+    .await;
+    let probe = run(&["probe", &host], &settings).await;
+    assert_eq!(probe.code, ExitCode::SUCCESS);
+    assert!(probe.out.contains(
+        "Stock firmware: Shelly Gen3, model S3PL-30110EU, app PlugMG3, firmware 2.2.0-beta2, \
+         MAC 08927251CA24"
+    ));
+    assert!(probe.out.contains("Runs from app slot 1."));
+    assert!(probe.out.contains("Wi-Fi signal: -74 dBm"));
+    assert!(probe.out.contains("Beta firmware"));
+    assert!(probe.out.contains("Not supported yet: only Gen1 devices can be flashed so far."));
+
+    // A stable Gen2 with login and without slot information.
+    let gen2 = r#"{"id":"shellyplus1-x","mac":"AA","model":"SNSW-001X16EU","gen":2,
+        "ver":"1.7.6","app":"Plus1","auth_en":true}"#;
+    let (host, _) = scripted(&[("/shelly", 200, gen2), ("/rpc/Wifi.GetStatus", 401, "")]).await;
+    let probe = run(&["probe", &host], &settings).await;
+    assert!(probe.out.contains("Shelly Gen2, model SNSW-001X16EU"));
+    assert!(probe.out.contains("Wi-Fi signal: unknown (login enabled)"));
+    assert!(!probe.out.contains("app slot"));
+    assert!(!probe.out.contains("Beta firmware"));
+
+    // A Pro device on Ethernet with Wi-Fi off.
+    let pro =
+        r#"{"id":"x","mac":"AA","model":"SPSW-202XE16EU","gen":2,"ver":"2.0.3","app":"Pro2"}"#;
+    let (host, _) = scripted(&[
+        ("/shelly", 200, pro),
+        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"disconnected","rssi":0}"#),
+    ])
+    .await;
+    let probe = run(&["probe", &host], &settings).await;
+    assert!(probe.out.contains("Wi-Fi: not connected"));
+    assert!(!probe.out.contains("0 dBm"));
+
+    // flash refuses after reading only.
+    let (host, seen) = scripted(&[
+        ("/shelly", 200, gen3),
+        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"got ip","rssi":-74}"#),
+    ])
+    .await;
+    let flash = run(&["flash", &host, "--firmware", &firmware_file(), "--yes"], &settings).await;
+    assert_eq!(flash.code, ExitCode::FAILURE);
+    assert!(flash.err.contains(
+        "S3PL-30110EU is a Shelly Gen3; only Gen1 devices can be flashed so far. Nothing was \
+         changed."
+    ));
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
 fn scan_settings(port: u16) -> Settings {
     Settings {
         scan: ScanOptions { port, timeout: Duration::from_millis(300), ..ScanOptions::default() },

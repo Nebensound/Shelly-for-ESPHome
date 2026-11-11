@@ -53,6 +53,13 @@ Dimmer 2, EM, Bulb, Vintage, Duo, Duo RGBW, i3 and UNI.
 
 Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
 
+Shelly Gen2 (ESP32) and Gen3 (ESP32-C3) devices cannot be flashed yet. `list`
+and `probe` already recognise them: `probe` shows model, app, firmware,
+the app slot the stock firmware runs from, and whether it is a beta firmware
+(betas can change the flash layout). It only sends reading requests. Support
+for these generations is being built in the milestone
+[Gen2/Gen3 over the air](https://github.com/Nebensound/Shelly-for-ESPHome/milestone/1).
+
 ## Usage
 
 ### 1. Build your ESPHome firmware

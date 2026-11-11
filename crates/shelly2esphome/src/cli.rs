@@ -23,6 +23,7 @@ use crate::{
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
+    rpc::WifiSignal,
 };
 
 /// Flash a self-built ESPHome firmware onto Shelly Gen1 devices over the air.
@@ -277,6 +278,28 @@ async fn probe(
             if info.auth {
                 let _ = writeln!(out, "Login enabled: pass --auth user:password.");
             }
+        }
+        Firmware::Newer { info, wifi } => {
+            let _ = writeln!(
+                out,
+                "Stock firmware: Shelly {}, model {}, app {}, firmware {}, MAC {}",
+                info.generation, info.model, info.app, info.firmware, info.mac
+            );
+            if let Some(slot) = info.slot {
+                let _ = writeln!(out, "Runs from app slot {slot}.");
+            }
+            let _ = match wifi {
+                WifiSignal::Dbm(rssi_dbm) => writeln!(out, "Wi-Fi signal: {rssi_dbm} dBm"),
+                WifiSignal::NotConnected => writeln!(out, "Wi-Fi: not connected"),
+                WifiSignal::LoginRequired => writeln!(out, "Wi-Fi signal: unknown (login enabled)"),
+            };
+            if info.firmware.is_beta() {
+                let _ = writeln!(
+                    out,
+                    "Beta firmware: its flash layout can differ from the stable release."
+                );
+            }
+            let _ = writeln!(out, "Not supported yet: only Gen1 devices can be flashed so far.");
         }
         Firmware::Migration(status) => {
             let _ = writeln!(
