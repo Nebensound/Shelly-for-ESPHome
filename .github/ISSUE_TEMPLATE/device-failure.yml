@@ -1,7 +1,7 @@
 name: "Device report: flashing failed"
 description: "Report a failed flash (the tool prints a prefilled link)."
 title: "Flash failed: "
-labels: [device-report]
+labels: [device-failure]
 type: Bug
 body:
   - type: markdown

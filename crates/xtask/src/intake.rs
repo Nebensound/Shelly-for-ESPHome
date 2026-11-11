@@ -15,10 +15,12 @@ use std::{
     time::Duration,
 };
 
+use crate::failure::{self, Duplicate, OpenIssue};
 use anyhow::{Context, bail};
 use serde::Serialize;
 use serde_json::Value;
 use shelly2esphome::{
+    flash,
     model::Model,
     report::{self, DeviceFacts, Report, SUCCESS},
 };
@@ -156,14 +158,27 @@ impl Submission {
         Ok(submission)
     }
 
-    fn get(&self, id: &str) -> &str {
+    /// The value of the coded field `id`; empty for an unknown ID.
+    #[must_use]
+    pub fn get(&self, id: &str) -> &str {
         self.fields.iter().find(|(known, _)| *known == id).map_or("", |(_, value)| value)
     }
 
-    /// The problems that refuse the report: a code that does not match the
-    /// fields, or a value the tool would never write.
+    /// The problems that refuse the report of a successful run: a code that
+    /// does not match the fields, or a value the tool would never write.
     #[must_use]
     pub fn problems(&self) -> Vec<String> {
+        self.problems_with(|value| value == SUCCESS)
+    }
+
+    /// The problems of a report of a failed run, see [`Self::problems`]; its
+    /// result must be a kind `FlashError::report_kind` names.
+    #[must_use]
+    pub fn failure_problems(&self) -> Vec<String> {
+        self.problems_with(flash::is_report_kind)
+    }
+
+    fn problems_with(&self, result: Check) -> Vec<String> {
         let mut problems = Vec::new();
         if Report::code(&self.fields) != self.code {
             problems.push(
@@ -173,7 +188,7 @@ impl Submission {
             );
         }
         let checks: [(&str, Check); 11] = [
-            ("result", |value| value == SUCCESS),
+            ("result", result),
             ("model", |value| Model::from_device_type(value).is_some()),
             ("generation", |value| value == "Gen1"),
             ("stock-firmware", |value| value == "unknown" || report::is_stock_build(value)),
@@ -306,6 +321,16 @@ pub struct Author {
     pub released: Vec<String>,
 }
 
+/// The issue form a report was submitted with; the workflow knows it from
+/// the issue's label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Form {
+    /// `device-report.yml`, a successful run.
+    Success,
+    /// `device-failure.yml`, a failed run.
+    Failure,
+}
+
 /// What happens to a report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -316,6 +341,9 @@ pub enum Verdict {
     Review,
     /// Not added; the author can fix the issue.
     Reject,
+    /// A report of a failed run (form `device-failure.yml`): it stays open as
+    /// a bug, unless it duplicates an older one.
+    Failure,
 }
 
 /// The decision about one report issue, as the workflow reads it.
@@ -327,22 +355,50 @@ pub struct Decision {
     pub reasons: Vec<String>,
     /// The report file below the repository root, unless refused.
     pub file: Option<PathBuf>,
+    /// For a [`Verdict::Failure`]: the older report it duplicates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duplicate: Option<Duplicate>,
 }
 
-/// Decides about the issue `issue` with `body` and writes its report file
-/// below `root` unless it is refused.
+/// Decides about the issue `issue` with `body` from `form` and writes its
+/// report file below `root` unless it is refused. A report of a failed run is
+/// no candidate for the device table; for it, the decision names an older
+/// `open` report of the same failure it duplicates.
 ///
 /// # Errors
 ///
 /// When the report file cannot be written.
-pub fn intake(issue: u64, body: &str, author: &Author, root: &Path) -> anyhow::Result<Decision> {
+pub fn intake(
+    issue: u64,
+    body: &str,
+    form: Form,
+    author: &Author,
+    open: &[OpenIssue],
+    root: &Path,
+) -> anyhow::Result<Decision> {
+    if form == Form::Failure {
+        let duplicate = failure::find_original(issue, body, open);
+        return Ok(Decision {
+            verdict: Verdict::Failure,
+            reasons: Vec::new(),
+            file: None,
+            duplicate,
+        });
+    }
     let submission = match Submission::from_issue(issue, body) {
         Ok(submission) => submission,
-        Err(reasons) => return Ok(Decision { verdict: Verdict::Reject, reasons, file: None }),
+        Err(reasons) => {
+            return Ok(Decision { verdict: Verdict::Reject, reasons, file: None, duplicate: None });
+        }
     };
     let problems = submission.problems();
     if !problems.is_empty() {
-        return Ok(Decision { verdict: Verdict::Reject, reasons: problems, file: None });
+        return Ok(Decision {
+            verdict: Verdict::Reject,
+            reasons: problems,
+            file: None,
+            duplicate: None,
+        });
     }
     let path = submission.path();
     let target = root.join(&path);
@@ -351,27 +407,29 @@ pub fn intake(issue: u64, body: &str, author: &Author, root: &Path) -> anyhow::R
         .with_context(|| format!("writing {}", target.display()))?;
     let reasons = submission.doubts(author);
     let verdict = if reasons.is_empty() { Verdict::Accept } else { Verdict::Review };
-    Ok(Decision { verdict, reasons, file: Some(path) })
+    Ok(Decision { verdict, reasons, file: Some(path), duplicate: None })
 }
 
-/// Checks every report file below `root`: its name is its issue number and
-/// it passes the checks a submitted report passes. Returns how many there are.
+/// Reads and checks every report file below `root`: its name is its issue
+/// number and it passes the checks a submitted report passes. Sorted by file
+/// name; none if the directory does not exist yet.
 ///
 /// # Errors
 ///
 /// Every file that fails, with the reason.
-pub fn check_reports(root: &Path) -> anyhow::Result<usize> {
+pub fn load_reports(root: &Path) -> anyhow::Result<Vec<Submission>> {
     let dir = root.join(REPORT_DIR);
     let listed = std::fs::read_dir(&dir).and_then(|entries| {
         entries.map(|entry| entry.map(|entry| entry.path())).collect::<Result<Vec<_>, _>>()
     });
     let mut paths = match listed {
         Ok(paths) => paths,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error).with_context(|| format!("reading {}", dir.display())),
     };
     paths.sort();
     let mut failures = Vec::new();
+    let mut reports = Vec::new();
     for path in &paths {
         let checked = std::fs::read_to_string(path).map_err(anyhow::Error::from).and_then(|text| {
             let submission = Submission::from_file(&text)?;
@@ -382,13 +440,24 @@ pub fn check_reports(root: &Path) -> anyhow::Result<usize> {
             if path.file_name() != submission.path().file_name() {
                 bail!("the file is not named after its issue {}", submission.issue);
             }
-            Ok(())
+            Ok(submission)
         });
-        if let Err(error) = checked {
-            failures.push(format!("{}: {error:#}", path.display()));
+        match checked {
+            Ok(submission) => reports.push(submission),
+            Err(error) => failures.push(format!("{}: {error:#}", path.display())),
         }
     }
-    if failures.is_empty() { Ok(paths.len()) } else { bail!(failures.join("\n")) }
+    if failures.is_empty() { Ok(reports) } else { bail!(failures.join("\n")) }
+}
+
+/// Checks every report file below `root` (see [`load_reports`]) and returns
+/// how many there are.
+///
+/// # Errors
+///
+/// Every file that fails, with the reason.
+pub fn check_reports(root: &Path) -> anyhow::Result<usize> {
+    load_reports(root).map(|reports| reports.len())
 }
 
 #[cfg(test)]

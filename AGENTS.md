@@ -88,6 +88,16 @@ live here were removed on purpose; do not reintroduce them.
   into `docs/device-reports/<issue>.json` and decides whether it merges by
   itself, waits for a review or is refused; `.github/workflows/device-reports.yml`
   runs it. `tests/reports.rs` checks every report file in the repository.
+  `failure.rs` finds the older open report a failure report duplicates (same
+  model and failure kind); the workflow adds its fields there and closes it.
+  The label of the form tells both apart (`device-report` for successes,
+  `device-failure` for failures), not the result value, so a wrong value in
+  either form is refused with a reason. Failure kinds are checked with
+  `flash::is_report_kind`, the list `FlashError::report_kind` uses.
+  `table.rs` builds the README's device table from the report files, between
+  the markers `<!-- device-table:start -->` and `<!-- device-table:end -->`;
+  `.github/workflows/device-table.yml` runs it daily and opens the versioned
+  pull request "docs: update the device table".
 - `migration_firmware/`: Mongoose OS intermediate firmware (C, GPL-3.0).
   The CLI is MIT; it carries the firmware packages only as data. The published
   crate is `MIT AND GPL-3.0-only` and ships both licenses plus

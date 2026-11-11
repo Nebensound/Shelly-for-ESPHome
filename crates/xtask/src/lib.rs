@@ -2,7 +2,9 @@
 //! published CLI; it shares the CLI's report rules (`shelly2esphome::report`)
 //! so the tool and the workflows cannot drift apart.
 
+pub mod failure;
 pub mod intake;
+pub mod table;
 
 use std::{ffi::OsString, io::Write, path::PathBuf};
 
@@ -10,7 +12,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 
-use crate::intake::Author;
+use crate::intake::{Author, Form};
 
 /// Repository tasks for CI.
 #[derive(Debug, Parser)]
@@ -29,6 +31,9 @@ enum Task {
         /// `GITHUB_EVENT_PATH`.
         #[arg(long)]
         event: PathBuf,
+        /// The issue form the report was submitted with.
+        #[arg(long, value_enum, default_value = "success")]
+        form: Form,
         /// Days since the author's account was created.
         #[arg(long)]
         account_age_days: u32,
@@ -39,12 +44,22 @@ enum Task {
         /// A released version of the tool, e.g. `0.8.0`; repeated.
         #[arg(long = "released")]
         released: Vec<String>,
+        /// The open report issues as `gh issue list --json number,body`
+        /// writes them, to find the original of a duplicate failure report.
+        #[arg(long)]
+        open_issues: Option<PathBuf>,
         /// The repository root.
         #[arg(long, default_value = ".")]
         root: PathBuf,
     },
     /// Check every report file in `docs/device-reports/`.
     CheckReports {
+        /// The repository root.
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+    },
+    /// Write the device table of the report files into the README.
+    DeviceTable {
         /// The repository root.
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -60,7 +75,15 @@ enum Task {
 /// with the help text), an unreadable event and the errors of the task.
 pub fn run(args: &[OsString], out: &mut dyn Write) -> anyhow::Result<()> {
     let output = match Cli::try_parse_from(args)?.task {
-        Task::ReportIntake { event, account_age_days, recent_reports, released, root } => {
+        Task::ReportIntake {
+            event,
+            form,
+            account_age_days,
+            recent_reports,
+            released,
+            open_issues,
+            root,
+        } => {
             let text = std::fs::read_to_string(&event)
                 .with_context(|| format!("reading {}", event.display()))?;
             let event: Value = serde_json::from_str(&text).context("the event is no JSON")?;
@@ -69,13 +92,27 @@ pub fn run(args: &[OsString], out: &mut dyn Write) -> anyhow::Result<()> {
             // A form whose fields were all left empty has no body.
             let body = event.pointer("/issue/body").and_then(Value::as_str).unwrap_or_default();
             let author = Author { account_age_days, recent_reports, released };
-            let decision = intake::intake(issue, body, &author, &root)?;
+            let open = match open_issues {
+                Some(path) => {
+                    let text = std::fs::read_to_string(&path)
+                        .with_context(|| format!("reading {}", path.display()))?;
+                    serde_json::from_str(&text).context("the open issues are no issue list")?
+                }
+                None => Vec::new(),
+            };
+            let decision = intake::intake(issue, body, form, &author, &open, &root)?;
             // Strings, a path and a unit enum always serialize.
             serde_json::to_string(&decision).unwrap_or_default()
         }
         Task::CheckReports { root } => {
             format!("{} device reports are valid", intake::check_reports(&root)?)
         }
+        Task::DeviceTable { root } => if table::update_readme(&root)? {
+            "the device table changed"
+        } else {
+            "the device table is up to date"
+        }
+        .to_owned(),
     };
     out.write_all(format!("{output}\n").as_bytes())?;
     Ok(())
