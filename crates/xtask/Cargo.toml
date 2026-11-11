@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+description = "Repository tasks for CI: device report intake (not published)"
+license = "MIT"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+shelly2esphome = { path = "../shelly2esphome" }
+
+[lints]
+workspace = true

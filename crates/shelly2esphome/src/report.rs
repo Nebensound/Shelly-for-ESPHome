@@ -102,8 +102,10 @@ fn is_stock_version(version: &str) -> bool {
 
 /// Whether `text` is a Gen1 stock firmware build, `YYYYMMDD-HHMMSS/<version>`
 /// (see [`is_stock_version`]). The device reports it, so anything else could
-/// be free text (a name, an address) and is not put into a report.
-fn is_stock_build(text: &str) -> bool {
+/// be free text (a name, an address) and is not put into a report. The
+/// report workflow applies the same rule to submitted reports.
+#[must_use]
+pub fn is_stock_build(text: &str) -> bool {
     text.split_once('/').is_some_and(|(date, version)| {
         date.len() == 15
             && date

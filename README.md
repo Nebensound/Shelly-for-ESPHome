@@ -236,6 +236,14 @@ reports keep the list of tested devices up to date; failures stay open as bugs.
 A refusal before any change (for example a weak signal) and a device that was
 not identified as supported print no link.
 
+A workflow checks every success report: the fields must be what the tool
+writes, and the report code must match them. A valid report becomes its own
+file in `docs/device-reports/` with its own pull request. It merges itself once
+CI passed, unless something needs a second look (an unreleased tool version, a
+new account, many reports at once, an own migration package, unusual values);
+then it waits for a maintainer. A report that fails the check gets a comment
+that names the problem, and the check runs again when you edit the issue.
+
 ## Recovery
 
 - **Device waits in the migration firmware:** run `flash` again; it resumes
@@ -276,6 +284,8 @@ not identified as supported print no link.
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
+# Repository tasks for CI (crates/xtask), e.g. check the device report files
+cargo xtask check-reports
 
 # Migration firmware: host tests of the hardware-independent modules
 pip install -r migration_firmware/requirements.txt   # clang-format, gcovr (pinned)

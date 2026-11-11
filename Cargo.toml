@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/shelly2esphome"]
+members = ["crates/shelly2esphome", "crates/xtask"]
+# `cargo build` and `cargo run` mean the CLI; the repository tasks are
+# `cargo xtask` (.cargo/config.toml).
+default-members = ["crates/shelly2esphome"]
 
 [workspace.package]
 edition = "2024"
