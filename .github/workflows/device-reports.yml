@@ -140,6 +140,14 @@ jobs:
         run: |
           set -euo pipefail
           DECISION="$RUNNER_TEMP/intake/decision.json"
+          # The open pull request of the workflow's own branch: a fork may
+          # name its branch the same, and its pull request must not be
+          # merged or closed here.
+          report_pr() {
+            gh pr list --head "$1" --base main --state open \
+              --json number,isCrossRepository \
+              --jq '[.[] | select(.isCrossRepository | not)][0].number // empty'
+          }
           gh auth setup-git
           branch="device-report/$ISSUE"
           file="docs/device-reports/$ISSUE.json"
@@ -148,7 +156,7 @@ jobs:
           git switch --create "$branch"
           git add "$file"
           git commit --quiet --message "docs: add the device report of #$ISSUE"
-          pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')"
+          pr="$(report_pr "$branch")"
           auto=false
           if [ -n "$pr" ]; then
             auto="$(gh pr view "$pr" --json autoMergeRequest --jq '.autoMergeRequest != null')"
@@ -192,7 +200,7 @@ jobs:
           if [ -z "$pr" ]; then
             gh pr create --head "$branch" --base main --title "docs: add the device report of #$ISSUE" \
               --body-file "$RUNNER_TEMP/pr.md"
-            pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')"
+            pr="$(report_pr "$branch")"
           else
             gh pr edit "$pr" --body-file "$RUNNER_TEMP/pr.md"
           fi
@@ -208,7 +216,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          pr="$(gh pr list --head "device-report/$ISSUE" --state open --json number --jq '.[0].number // empty')"
+          # The open pull request of the workflow's own branch: a fork may
+          # name its branch the same, and its pull request must not be
+          # merged or closed here.
+          report_pr() {
+            gh pr list --head "$1" --base main --state open \
+              --json number,isCrossRepository \
+              --jq '[.[] | select(.isCrossRepository | not)][0].number // empty'
+          }
+          pr="$(report_pr "device-report/$ISSUE")"
           if [ -n "$pr" ]; then
             gh pr close "$pr" --delete-branch --comment "The report of #$ISSUE no longer passes the check."
           fi
