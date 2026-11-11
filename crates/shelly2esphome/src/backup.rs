@@ -163,12 +163,25 @@ impl Backup {
     }
 }
 
+/// A builder for directories only the owner can access. Windows has no mode
+/// bits; its directories keep the default permissions of their parent.
+fn private_dir_builder() -> std::fs::DirBuilder {
+    #[cfg(unix)]
+    {
+        let mut builder = std::fs::DirBuilder::new();
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::DirBuilder::new()
+    }
+}
+
 /// Creates a new directory `parent/name` (or `name-2`, `name-3`, …) that did
 /// not exist before and is only accessible to the owner (on Unix).
 fn create_unique_directory(parent: &Path, name: &str) -> Result<PathBuf, BackupError> {
-    let mut builder = std::fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    let builder = private_dir_builder();
     let mut attempt = 1_u32;
     loop {
         let directory = match attempt {
