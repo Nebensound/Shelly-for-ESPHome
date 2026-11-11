@@ -38,7 +38,9 @@ pub const MAX_REPLY_BYTES: usize = 64 * 1024;
 pub struct FetchOptions {
     /// Root certificate (DER) the servers' certificates must be signed by.
     pub root: Vec<u8>,
-    /// Host names resolved to fixed addresses instead of DNS (tests).
+    /// Host names resolved to fixed addresses instead of DNS (tests). With
+    /// any of them, the client connects directly, without a proxy from the
+    /// environment, which would bypass them.
     pub resolve: Vec<(String, std::net::SocketAddr)>,
     /// Cache directory; `None` downloads every time.
     pub cache: Option<PathBuf>,
@@ -256,7 +258,7 @@ pub async fn fetch(app: &AppName, options: &FetchOptions) -> Result<Fetched, Fet
             .user_agent(concat!("shelly2esphome/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(options.timeout)
             .read_timeout(options.timeout),
-        |builder, (host, addr)| builder.resolve(host, *addr),
+        |builder, (host, addr)| builder.no_proxy().resolve(host, *addr),
     );
     let client =
         shelly_tls::client_with_root(&options.root, builder).map_err(FetchError::Client)?;
