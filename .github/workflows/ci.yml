@@ -149,7 +149,10 @@ jobs:
             # commit still counts for the next version, so it must not raise
             # more than the patch version a later change raises anyway.
             if reports_only "origin/$DEFAULT_BRANCH...HEAD"; then
-              if [ "$own_bump" != patch ] || [ "$title_bump" != patch ]; then
+              # The title becomes the squash commit, so it counts with the
+              # patterns of the semantic action like the commits do.
+              if [ "$own_bump" != patch ] || grep -qE \
+                 '^[A-Za-z0-9_]+(\([^)]*\))?!:|^BREAKING[ -]CHANGE:|^feat(\([^)]*\))?:' <<< "$TITLE"; then
                 echo "::error::A pull request that only adds device reports is a patch-level change: use a title and commits like 'docs: …', not 'feat' or a breaking change."
                 exit 1
               fi
