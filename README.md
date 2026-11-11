@@ -59,11 +59,16 @@ the app slot the stock firmware runs from, and whether it is a beta firmware
 (betas can change the flash layout). It only sends reading requests. Support
 for these generations is being built in the milestone
 [Gen2/Gen3 over the air](https://github.com/Nebensound/Shelly-for-ESPHome/milestone/1).
-`shelly2esphome check firmware.factory.bin --package <official.zip>` already
-checks an ESPHome factory image against the official update package of the
-device: bootloader settings and chip, the partition table (build ESPHome with
-the device's stock partition table), an erased otadata area and the
-application in `app_0`.
+`shelly2esphome check firmware.factory.bin --app <APP>` already checks an
+ESPHome factory image against the official update package of the device:
+bootloader settings and chip, the partition table (build ESPHome with the
+device's stock partition table), an erased otadata area and the application
+in `app_0`. `<APP>` is the app name `probe` shows, e.g. `S1G3`. The tool
+downloads the current stable package from Shelly's update service, checks its
+SHA-256 and keeps it in the user's cache directory
+(`shelly2esphome/packages/<APP>/<version>.zip`); a cached package is checked
+again before every use. `--package <official.zip>` uses a package file
+instead.
 
 ## Usage
 
@@ -254,6 +259,12 @@ is wrong.
   network can hand it a firmware image. This is the same exposure as a stock
   Shelly without login. Run the migration in one go and do not leave devices
   waiting.
+- Shelly's update servers use Shelly's own certificate authority, which no
+  operating system trusts. The tool trusts exactly that root certificate,
+  built into the program, for these servers and never switches certificate
+  verification off. A downloaded package is used only if its SHA-256 is the
+  one the update service announced and it passes the same checks as a
+  package file.
 
 ## Development
 

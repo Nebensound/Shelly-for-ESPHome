@@ -11,6 +11,7 @@ pub mod device;
 pub mod discover;
 pub mod embedded;
 pub mod esp32;
+pub mod fetch;
 pub mod flash;
 pub mod http;
 pub mod image;

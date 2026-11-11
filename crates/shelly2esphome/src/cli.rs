@@ -20,11 +20,12 @@ use crate::{
     device::{Credentials, DeviceClient, Firmware},
     discover::{self, Network, ScanOptions},
     esp32::factory::{APP_PARTITION, FactoryImage},
+    fetch::{self, FetchOptions, Source},
     flash::{self, FlashOptions, Reporter, local_ip_towards},
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
-    rpc::WifiSignal,
+    rpc::{AppName, WifiSignal},
     stock_package::StockPackage,
 };
 
@@ -65,9 +66,14 @@ enum Command {
     },
     /// Check a firmware file without touching any device.
     Check {
-        /// ESPHome `firmware.bin` (uncompressed, ESP8266), or with --package the
-        /// `firmware.factory.bin` of a Gen2/Gen3 build.
+        /// ESPHome `firmware.bin` (uncompressed, ESP8266), or with --app or
+        /// --package the `firmware.factory.bin` of a Gen2/Gen3 build.
         firmware: PathBuf,
+        /// Application name of the Gen2/Gen3 device as `probe` shows it, e.g.
+        /// S1G3; checks a factory image against the current official package,
+        /// downloaded from Shelly or taken from the cache.
+        #[arg(long, value_name = "APP", conflicts_with = "package")]
+        app: Option<AppName>,
         /// Official update package of the Gen2/Gen3 device; checks a factory
         /// image against it.
         #[arg(long)]
@@ -122,6 +128,8 @@ pub struct Settings {
     pub scan: ScanOptions,
     /// Finds this computer's address towards a target (default network of `list`).
     pub local_ip: fn(IpAddr) -> std::io::Result<IpAddr>,
+    /// Where `check --app` gets the official package from.
+    pub fetch: FetchOptions,
 }
 
 impl Default for Settings {
@@ -130,6 +138,7 @@ impl Default for Settings {
             flash: FlashOptions::default(),
             scan: ScanOptions::default(),
             local_ip: local_ip_towards,
+            fetch: FetchOptions::default(),
         }
     }
 }
@@ -342,18 +351,46 @@ async fn backup_command(
     Ok(())
 }
 
+fn read_file(path: &Path) -> anyhow::Result<Vec<u8>> {
+    std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))
+}
+
+fn package_file(package: &Path) -> anyhow::Result<StockPackage> {
+    StockPackage::parse(&read_file(package)?)
+        .with_context(|| format!("{} is no usable official package", package.display()))
+}
+
+async fn package_of(
+    app: &AppName,
+    settings: &Settings,
+    terminal: &mut Terminal<'_>,
+) -> anyhow::Result<StockPackage> {
+    let fetched = fetch::fetch(app, &settings.fetch)
+        .await
+        .with_context(|| format!("cannot get the official package of {app}"))?;
+    let origin = match &fetched.source {
+        Source::Downloaded { url, cached: Some(path) } => {
+            format!("downloaded from {url}, kept in {}", path.display())
+        }
+        Source::Downloaded { url, cached: None } => format!("downloaded from {url}"),
+        Source::Cache(path) => format!("from the cache {}", path.display()),
+    };
+    let package = fetched.package;
+    let _ = writeln!(
+        terminal.out,
+        "Official package {} {}: {origin}.",
+        package.name(),
+        package.version()
+    );
+    Ok(package)
+}
+
 fn check_factory(
     firmware: &Path,
-    package: &Path,
+    stock: &StockPackage,
     terminal: &mut Terminal<'_>,
 ) -> anyhow::Result<()> {
-    let read = |path: &Path| {
-        std::fs::read(path).with_context(|| format!("cannot read {}", path.display()))
-    };
-    let package_bytes = read(package)?;
-    let stock = StockPackage::parse(&package_bytes)
-        .with_context(|| format!("{} is no usable official package", package.display()))?;
-    let (factory, warnings) = FactoryImage::check(read(firmware)?, &stock)
+    let (factory, warnings) = FactoryImage::check(read_file(firmware)?, stock)
         .with_context(|| format!("{} does not suit {}", firmware.display(), stock.name()))?;
     let slot = factory.partition_table().find(APP_PARTITION);
     let _ = writeln!(
@@ -397,9 +434,13 @@ async fn execute(
         Command::Backup { host, auth, output } => {
             backup_command(&host, auth, &output, terminal).await
         }
-        Command::Check { firmware, package: None } => check(&firmware, terminal),
-        Command::Check { firmware, package: Some(package) } => {
-            check_factory(&firmware, &package, terminal)
+        Command::Check { firmware, app: None, package: None } => check(&firmware, terminal),
+        Command::Check { firmware, app: Some(app), .. } => {
+            let stock = package_of(&app, settings, terminal).await?;
+            check_factory(&firmware, &stock, terminal)
+        }
+        Command::Check { firmware, package: Some(package), .. } => {
+            check_factory(&firmware, &package_file(&package)?, terminal)
         }
         Command::Version => {
             let _ = write!(terminal.out, "{}", Cli::command().render_version());

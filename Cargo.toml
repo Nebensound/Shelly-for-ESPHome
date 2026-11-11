@@ -12,6 +12,7 @@ anyhow = "1"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "query"] }
 bytes = "1"
 clap = { version = "4", features = ["derive"] }
+dirs = "6"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.4"
 hex = "0.4"

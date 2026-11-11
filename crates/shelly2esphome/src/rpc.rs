@@ -76,6 +76,20 @@ macro_rules! text_type {
 
 text_type!(ModelId, AppName, FirmwareVersion);
 
+impl std::str::FromStr for AppName {
+    type Err = String;
+
+    /// Letters and digits only, like every application name; the name becomes
+    /// part of a URL and of a file path.
+    fn from_str(text: &str) -> Result<Self, String> {
+        if !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(format!("{text:?} is no application name (letters and digits, e.g. S1G3)"))
+        }
+    }
+}
+
 /// Answer of `/shelly` from a Shelly of generation 2 or later.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct DeviceInfo {

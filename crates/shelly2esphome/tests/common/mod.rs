@@ -1,6 +1,8 @@
 //! Simulated Shelly device and helpers shared by the integration tests.
 #![allow(dead_code, missing_docs, clippy::unwrap_used)]
 
+pub mod cloud;
+
 use std::{
     io::{Cursor, Write},
     net::SocketAddr,
