@@ -51,15 +51,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AUTHOR: ${{ github.event.issue.user.login }}
+          OPENED: ${{ github.event.issue.created_at }}
         run: |
           set -euo pipefail
           created="$(gh api "users/$AUTHOR" --jq .created_at)"
           age=$(( ($(date +%s) - $(date -d "$created" +%s)) / 86400 ))
           since="$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)"
           query="repo:$GITHUB_REPOSITORY is:issue label:device-report author:$AUTHOR created:>=$since"
-          recent="$(gh api -X GET search/issues -f q="$query" --jq .total_count)"
-          # The search index may not know this issue yet.
-          recent=$(( recent < 1 ? 1 : recent ))
+          gh api -X GET search/issues -f q="$query" -f per_page=100 > "$RUNNER_TEMP/search.json"
+          recent="$(jq .total_count "$RUNNER_TEMP/search.json")"
+          # The search index may not know this issue yet; it counts if it was
+          # opened within the day (an edit of an older one does not).
+          listed="$(jq --argjson issue "$ISSUE" '[.items[].number] | index($issue) != null' \
+            "$RUNNER_TEMP/search.json")"
+          if [ "$listed" = false ] && [ "$(date -d "$OPENED" +%s)" -ge "$(date -d "$since" +%s)" ]; then
+            recent=$(( recent + 1 ))
+          fi
           echo "account age $age days, $recent reports within a day"
           echo "age=$age" >> "$GITHUB_OUTPUT"
           echo "recent=$recent" >> "$GITHUB_OUTPUT"
