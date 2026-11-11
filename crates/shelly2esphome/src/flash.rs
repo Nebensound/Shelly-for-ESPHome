@@ -19,6 +19,7 @@ use crate::{
     image::FirmwareImage,
     migration::{MigrationPackage, PackageError},
     model::Model,
+    report::{DeviceFacts, PackageSource},
     rpc::{Generation, ModelId},
     server::{FileServer, IMAGE_PATH, PACKAGE_PATH},
 };
@@ -102,6 +103,9 @@ pub trait Reporter {
     fn progress(&mut self, sent_bytes: u64, total_bytes: u64);
     /// Asks before the first change to the device; `false` aborts.
     fn confirm(&mut self, summary: &str) -> bool;
+    /// What the run has learned about the device so far, for the device
+    /// report; called whenever it grows.
+    fn learned(&mut self, _facts: &DeviceFacts) {}
 }
 
 /// Result of a successful run.
@@ -214,6 +218,53 @@ pub enum FlashError {
          router (new IP address?)."
     )]
     EsphomeNotSeen(SocketAddr),
+}
+
+/// A fixed token from a migration firmware error: lowercase letters, digits,
+/// `_` and `-`, at most 40 characters; anything else is `other`.
+fn error_token(text: &str) -> &str {
+    let plain = (1..=40).contains(&text.len())
+        && text.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
+        });
+    if plain { text } else { "other" }
+}
+
+impl FlashError {
+    /// The result of a device report for this failure, a fixed kind that never
+    /// contains an address or free text; `None` for a deliberate refusal
+    /// before any change (nothing to report).
+    #[must_use]
+    pub fn report_kind(&self) -> Option<String> {
+        let kind = match self {
+            Self::Device(DeviceError::AuthRequired)
+            | Self::UnsupportedModel(_)
+            | Self::UnsupportedGeneration { .. }
+            | Self::WeakSignal { .. }
+            | Self::PackageRequired(_)
+            | Self::Aborted
+            | Self::Busy(_)
+            | Self::ImageTooLarge { .. } => return None,
+            Self::Device(DeviceError::Http(_)) => "device-unreachable",
+            Self::Device(DeviceError::Status { .. }) => "device-http-status",
+            Self::Device(DeviceError::Rejected(_)) => "migration-rejected",
+            Self::Device(DeviceError::UnknownFirmware) => "unknown-firmware",
+            Self::Device(DeviceError::UnsupportedProtocol(_)) => "protocol-mismatch",
+            Self::Package(_) => "package-invalid",
+            Self::Backup(_) => "backup-failed",
+            Self::Io(_) => "local-network",
+            Self::PackageNotFetched(_) => "package-not-fetched",
+            Self::MigrationNotReachable => "migration-not-reachable",
+            Self::RelocationFailed(_) => "relocation-failed",
+            Self::DeviceFailed(error) => {
+                return Some(format!("device-failed:{}", error_token(error)));
+            }
+            Self::InstallFatal => "install-fatal",
+            Self::FlashTimeout => "flash-timeout",
+            Self::EsphomeNotSeen(_) => "esphome-not-seen",
+        };
+        Some(kind.to_owned())
+    }
 }
 
 /// Resolves `host` (`ip`, `ip:port`, `name` or `name:port`) to a socket address.
@@ -403,6 +454,19 @@ pub async fn run(
         Firmware::Stock { info, rssi_dbm } => {
             let model = Model::from_device_type(&info.device_type)
                 .ok_or_else(|| FlashError::UnsupportedModel(info.device_type.clone()))?;
+            let mut facts = DeviceFacts {
+                model: Some(model),
+                stock_firmware: Some(info.fw.clone()),
+                rssi_dbm: Some(rssi_dbm),
+                login: Some(info.auth),
+                backup: None,
+                package: Some(if package.is_some() {
+                    PackageSource::File
+                } else {
+                    PackageSource::Embedded
+                }),
+            };
+            reporter.learned(&facts);
             if rssi_dbm < options.min_rssi_dbm && !options.allow_weak_signal {
                 return Err(FlashError::WeakSignal {
                     rssi_dbm,
@@ -435,6 +499,8 @@ pub async fn run(
                 let directory = backup::collect(client).await?.write_to(parent)?;
                 reporter.info(&format!("Stock settings saved to {}", directory.display()));
             }
+            facts.backup = Some(options.backup_dir.is_some());
+            reporter.learned(&facts);
             (Some(package), None)
         }
         Firmware::Newer { info, .. } => {

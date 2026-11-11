@@ -17,6 +17,7 @@ pub mod image;
 pub mod migration;
 pub mod model;
 pub mod protocol;
+pub mod report;
 pub mod rpc;
 pub mod server;
 pub mod shelly_tls;

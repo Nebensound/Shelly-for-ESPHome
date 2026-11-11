@@ -351,9 +351,44 @@ async fn flashes_with_backup_and_confirmation_flag() {
     assert!(flashed.err.contains("transferred: 100 %"));
     assert!(flashed.err.contains("• Done: ESPHome answers on"));
     assert!(!flashed.err.contains("Continue?"));
+    // The report link carries what the run learned, and no address.
+    assert!(flashed.out.starts_with("Help others with the same device: report that it works."));
+    let link = flashed.out.lines().last().unwrap();
+    assert!(link.starts_with(
+        "https://github.com/Nebensound/Shelly-for-ESPHome/issues/new?template=device-report.yml&"
+    ));
+    for field in
+        ["&result=success&", "&model=SHDM-2&", "&login=no&", "&backup=yes&", "&package=file&"]
+    {
+        assert!(link.contains(field), "{field} in {link}");
+    }
+    assert!(!link.contains("127.0.0.1"), "{link}");
     assert_eq!(shared.lock().unwrap().mode, Mode::Esphome);
     assert_eq!(std::fs::read_dir(&backups).unwrap().count(), 1);
     std::fs::remove_dir_all(&backups).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn links_a_failure_report_after_the_error() {
+    let (host, shared, settings) = flash_settings(Mode::Stock).await;
+    shared.lock().unwrap().fail_with = Some("size_mismatch");
+    let args =
+        ["flash", &host, "-f", &firmware_file(), "-m", &package_file(), "--no-backup", "--yes"];
+    let failed = run(&args, &settings).await;
+    assert_eq!(failed.code, ExitCode::FAILURE);
+    let (error, report) = failed.err.split_once("\n\nPlease report this failure").unwrap();
+    assert!(error.contains("Error: the device reports the error \"size_mismatch\""), "{error}");
+    let link = report.lines().last().unwrap();
+    assert!(link.contains("?template=device-failure.yml&"), "{link}");
+    assert!(link.contains("&result=device-failed%3Asize_mismatch&model=SHDM-2&"), "{link}");
+    assert!(link.contains("&backup=no&"), "{link}");
+    assert!(failed.out.is_empty());
+
+    // A refusal before any change links nothing.
+    let (host, _, settings) = flash_settings(Mode::Stock).await;
+    let weak = run(&["flash", &host, "-f", &firmware_file(), "--min-rssi", "-50"], &settings).await;
+    assert!(weak.err.contains("Wi-Fi signal too weak"));
+    assert!(!weak.err.contains("Please report"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

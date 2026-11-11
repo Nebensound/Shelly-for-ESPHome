@@ -222,6 +222,20 @@ reach your computer, `flash` stops with "the device did not fetch the migration 
 nothing is changed. Set `--serve-ip` if the detected address of your computer
 is wrong.
 
+### 4. Report your device
+
+After `flash`, the tool prints a link to a GitHub issue form it has already
+filled in: after a success to report that the model works, after a failure to
+report the problem. Opening the link sends nothing; the report exists only once
+you submit the form. It contains the result, the device type, the stock
+firmware it came from, the Wi-Fi signal, whether a login and a backup were
+involved, the package source, the tool version, your computer's operating
+system and architecture and the duration. It never contains IP or MAC
+addresses, device or network names, credentials or error texts. Successful
+reports keep the list of tested devices up to date; failures stay open as bugs.
+A refusal before any change (for example a weak signal) and a device that was
+not identified as supported print no link.
+
 ## Recovery
 
 - **Device waits in the migration firmware:** run `flash` again; it resumes
