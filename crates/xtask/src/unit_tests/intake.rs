@@ -248,6 +248,18 @@ fn takes_a_report_in() {
     assert_eq!((incomplete.verdict, incomplete.reasons.len()), (Verdict::Reject, 12));
     assert!(!root.join("docs/device-reports/14.json").exists());
 
+    // The failure form carries the same label; such a report is left alone.
+    let failed = coded_with("result", "device-failed:hash_mismatch");
+    let failure = intake(17, &body_of(&failed), &trusted(), &root).expect("decided");
+    assert_eq!(failure, Decision { verdict: Verdict::Failure, reasons: vec![], file: None });
+    // An emptied result is a missing field, not a failure.
+    for empty in ["", NO_RESPONSE] {
+        let emptied = coded_with("result", empty);
+        let refused = intake(18, &body_of(&emptied), &trusted(), &root).expect("decided");
+        assert_eq!(refused.verdict, Verdict::Reject, "{empty:?}");
+    }
+    assert!(!root.join("docs/device-reports/17.json").exists());
+
     let file = root.join("a-file");
     std::fs::write(&file, "").expect("file");
     let error = intake(16, &body(), &trusted(), &file).expect_err("not a directory");

@@ -316,6 +316,9 @@ pub enum Verdict {
     Review,
     /// Not added; the author can fix the issue.
     Reject,
+    /// A report of a failed run (form `device-failure.yml`, which carries
+    /// the same label): it stays open as a bug and is not added.
+    Failure,
 }
 
 /// The decision about one report issue, as the workflow reads it.
@@ -330,12 +333,19 @@ pub struct Decision {
 }
 
 /// Decides about the issue `issue` with `body` and writes its report file
-/// below `root` unless it is refused.
+/// below `root` unless it is refused. A report of a failed run (any result
+/// but `success`) is left alone: it is no candidate for the device table.
 ///
 /// # Errors
 ///
 /// When the report file cannot be written.
 pub fn intake(issue: u64, body: &str, author: &Author, root: &Path) -> anyhow::Result<Decision> {
+    let failed = answers(body).iter().any(|(id, value)| {
+        *id == "result" && !value.is_empty() && value != NO_RESPONSE && value != SUCCESS
+    });
+    if failed {
+        return Ok(Decision { verdict: Verdict::Failure, reasons: Vec::new(), file: None });
+    }
     let submission = match Submission::from_issue(issue, body) {
         Ok(submission) => submission,
         Err(reasons) => return Ok(Decision { verdict: Verdict::Reject, reasons, file: None }),

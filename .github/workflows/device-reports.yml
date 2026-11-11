@@ -7,7 +7,9 @@ name: Device reports
 # - accept: the pull request merges itself once CI passed;
 # - review: the pull request waits for a maintainer, who sees why;
 # - reject: no pull request; a comment names the problems, and the check runs
-#   again when the author edits the issue.
+#   again when the author edits the issue;
+# - failure: a report of a failed run (form device-failure.yml carries the
+#   same label); it stays open as a bug and is left alone here.
 # Nothing from the issue reaches a shell: the task reads the event file itself,
 # and the steps below use only the issue number, the author's login (passed
 # through the environment) and the task's decision. Two jobs: cargo runs
@@ -132,7 +134,7 @@ jobs:
               test "$(jq -r .file "$decision")" = "$file"
               mkdir -p docs/device-reports
               cp "$RUNNER_TEMP/intake/report.json" "$file" ;;
-            reject) ;;
+            reject | failure) ;;
             *) echo "::error::unknown verdict"; exit 1 ;;
           esac
           echo "verdict=$verdict" >> "$GITHUB_OUTPUT"
@@ -140,7 +142,7 @@ jobs:
       # issue updates them instead of opening another one.
       - name: Open or update the pull request
         id: pr
-        if: steps.intake.outputs.verdict != 'reject'
+        if: steps.intake.outputs.verdict == 'accept' || steps.intake.outputs.verdict == 'review'
         env:
           GH_TOKEN: ${{ github.token }}
           VERDICT: ${{ steps.intake.outputs.verdict }}
@@ -247,7 +249,9 @@ jobs:
           if [ -n "$pr" ]; then
             gh pr close "$pr" --delete-branch --comment "The report of #$ISSUE no longer passes the check."
           fi
+      # A failure report stays open as a bug; it gets no comment here.
       - name: Tell the author
+        if: steps.intake.outputs.verdict != 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
           VERDICT: ${{ steps.intake.outputs.verdict }}
