@@ -371,16 +371,16 @@ async fn flashes_with_backup_and_confirmation_flag() {
 #[tokio::test(flavor = "multi_thread")]
 async fn links_a_failure_report_after_the_error() {
     let (host, shared, settings) = flash_settings(Mode::Stock).await;
-    shared.lock().unwrap().fail_with = Some("size_mismatch");
+    shared.lock().unwrap().fail_with = Some("hash_mismatch");
     let args =
         ["flash", &host, "-f", &firmware_file(), "-m", &package_file(), "--no-backup", "--yes"];
     let failed = run(&args, &settings).await;
     assert_eq!(failed.code, ExitCode::FAILURE);
     let (error, report) = failed.err.split_once("\n\nPlease report this failure").unwrap();
-    assert!(error.contains("Error: the device reports the error \"size_mismatch\""), "{error}");
+    assert!(error.contains("Error: the device reports the error \"hash_mismatch\""), "{error}");
     let link = report.lines().last().unwrap();
     assert!(link.contains("?template=device-failure.yml&"), "{link}");
-    assert!(link.contains("&result=device-failed%3Asize_mismatch&model=SHDM-2&"), "{link}");
+    assert!(link.contains("&result=device-failed%3Ahash_mismatch&model=SHDM-2&"), "{link}");
     assert!(link.contains("&backup=no&"), "{link}");
     assert!(failed.out.is_empty());
 

@@ -220,14 +220,38 @@ pub enum FlashError {
     EsphomeNotSeen(SocketAddr),
 }
 
-/// A fixed token from a migration firmware error: lowercase letters, digits,
-/// `_` and `-`, at most 40 characters; anything else is `other`.
-fn error_token(text: &str) -> &str {
-    let plain = (1..=40).contains(&text.len())
-        && text.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-".contains(&byte)
-        });
-    if plain { text } else { "other" }
+/// The error reasons the migration firmware sets (`mg2x_*_result_str` and
+/// `fail()` in `main.c`), besides `http_<status>`. A device report carries
+/// only these, so text a device made up (a MAC, a name) never reaches it;
+/// `tests/report_forms.rs` checks the list against the firmware sources.
+pub const DEVICE_ERROR_REASONS: [&str; 19] = [
+    "alignment",
+    "bad_magic",
+    "connect_failed",
+    "flash",
+    "hash_format",
+    "hash_mismatch",
+    "install_fatal",
+    "install_layout",
+    "install_retryable",
+    "limit",
+    "overflow",
+    "redirect",
+    "relocation_copy",
+    "size_too_large",
+    "size_too_small",
+    "timeout",
+    "truncated",
+    "unknown",
+    "url_scheme",
+];
+
+/// `error` if it is a known reason of the migration firmware, else `other`.
+fn error_token(error: &str) -> &str {
+    let http_status = error
+        .strip_prefix("http_")
+        .is_some_and(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()));
+    if http_status || DEVICE_ERROR_REASONS.contains(&error) { error } else { "other" }
 }
 
 impl FlashError {

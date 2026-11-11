@@ -81,9 +81,15 @@ async fn names_every_failure_for_device_reports() {
         (FlashError::PackageNotFetched("10.0.0.2:8080".into()), "package-not-fetched"),
         (FlashError::MigrationNotReachable, "migration-not-reachable"),
         (FlashError::RelocationFailed("flash".into()), "relocation-failed"),
-        (FlashError::DeviceFailed("size_mismatch".into()), "device-failed:size_mismatch"),
-        // Free text (it could hold an address) becomes "other".
+        (FlashError::DeviceFailed("hash_mismatch".into()), "device-failed:hash_mismatch"),
+        (FlashError::DeviceFailed("http_404".into()), "device-failed:http_404"),
+        // Anything the firmware does not set becomes "other": it could be a
+        // MAC, a name or an address.
+        (FlashError::DeviceFailed("aabbccddeeff".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("my-kitchen-light".into()), "device-failed:other"),
         (FlashError::DeviceFailed("bad 10.0.0.2".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("http_4040".into()), "device-failed:other"),
+        (FlashError::DeviceFailed("http_abc".into()), "device-failed:other"),
         (FlashError::DeviceFailed(String::new()), "device-failed:other"),
         (FlashError::InstallFatal, "install-fatal"),
         (FlashError::FlashTimeout, "flash-timeout"),

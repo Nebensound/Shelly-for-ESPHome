@@ -107,13 +107,13 @@ fn links_to_the_form_of_the_result() {
     assert!(success.ends_with(&format!("&report-code={}", Report::code(&full().fields()))));
 
     let failure = Report {
-        result: "device-failed:size_mismatch".into(),
+        result: "device-failed:hash_mismatch".into(),
         facts: DeviceFacts::default(),
         ..full()
     };
     assert!(failure.url().contains(
         "?template=device-failure.yml&title=Flash%20failed%3A%20unknown%20device%20\
-         %28device-failed%3Asize_mismatch%29&result=device-failed%3Asize_mismatch&"
+         %28device-failed%3Ahash_mismatch%29&result=device-failed%3Ahash_mismatch&"
     ));
 }
 
