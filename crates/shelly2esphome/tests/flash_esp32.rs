@@ -14,7 +14,7 @@ use shelly2esphome::{
     device::{DeviceClient, Firmware},
     esp32::synthetic::{Fixture, LAYOUT, table},
     esphome_package::EsphomePackage,
-    flash::{FlashError, FlashOptions, FlashOutcome, Timeouts},
+    flash::{FetchProblem, FlashError, FlashOptions, FlashOutcome, Timeouts},
     flash_esp32::{self, Esp32Flash},
     report::PackageSource,
     stock_package::StockPackage,
@@ -288,7 +288,16 @@ async fn explains_a_refused_update_and_a_missing_download() {
         setup.options.timeouts.package_download = Duration::from_millis(300);
     })
     .await;
-    assert!(matches!(idle.result, Err(FlashError::PackageNotFetched(_))));
+    assert!(matches!(idle.result, Err(FlashError::PackageNotFetched(FetchProblem::NoRequest(_)))));
+
+    // Nothing arrives at all: no need to wait for the whole download limit.
+    let silent = run_with(Gen2 { download: false, ..gen2::gen2() }, |setup| {
+        setup.options.timeouts.package_fetch = Duration::from_millis(300);
+        setup.options.timeouts.package_download = Duration::from_secs(600);
+    })
+    .await;
+    assert!(silent.error().contains("no request reached this computer"));
+    assert_eq!(silent.recorder.problems.len(), 1);
 
     // The log setting cannot be put back: the run says so.
     let stuck = run(Gen2 { refuse_update: Some("busy"), fail_restore: true, ..gen2::gen2() }).await;
@@ -419,4 +428,17 @@ async fn stops_when_the_host_cannot_be_resolved() {
         let error = flash_esp32::run(target, flash, &options, &mut Recorder::default()).await;
         assert!(matches!(error, Err(FlashError::Io(_))), "{target}");
     }
+}
+
+#[tokio::test]
+async fn hands_the_package_over_again_once_the_device_can_fetch_it() {
+    let retried = run_with(Gen2 { ignored_updates: 1, ..gen2::gen2() }, |setup| {
+        setup.options.timeouts.package_fetch = Duration::from_millis(300);
+        setup.recorder.retries = 1;
+    })
+    .await;
+    assert!(retried.result.is_ok(), "{:?}", retried.result.as_ref().err());
+    let updates = retried.requests().iter().filter(|request| *request == "Shelly.Update").count();
+    assert_eq!(updates, 2);
+    assert_eq!(retried.recorder.problems.len(), 1);
 }

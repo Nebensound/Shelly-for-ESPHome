@@ -591,6 +591,31 @@ async fn asks_before_flashing() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn offers_to_try_again_when_the_package_is_not_fetched() {
+    let (firmware, package) = (firmware_file(), package_file());
+    let (host, shared, mut settings) = flash_settings(Mode::Stock).await;
+    shared.lock().unwrap().ignored_otas = 1;
+    settings.flash.timeouts.package_fetch = Duration::from_millis(300);
+    let args = ["flash", &host, "-f", &firmware, "-m", &package, "--no-backup"];
+    let retried = run_with_input(&args, &settings, &mut Cursor::new(b"yes\nyes\n".to_vec())).await;
+    assert_eq!(retried.code, ExitCode::SUCCESS, "{}", retried.err);
+    assert!(retried.err.contains("no request reached this computer"), "{}", retried.err);
+    assert!(retried.err.contains("Fix that, then type \"yes\" to try again:"));
+    assert_eq!(shared.lock().unwrap().ota_requests, 2);
+
+    // Unattended runs stop at once and print the problem only as the error.
+    let (host, shared, mut settings) = flash_settings(Mode::Stock).await;
+    shared.lock().unwrap().ignore_ota = true;
+    settings.flash.timeouts.package_fetch = Duration::from_millis(200);
+    let args = ["flash", &host, "-f", &firmware, "-m", &package, "--no-backup", "--yes"];
+    let stopped = run(&args, &settings).await;
+    assert_eq!(stopped.code, ExitCode::FAILURE);
+    assert!(!stopped.err.contains("try again"), "{}", stopped.err);
+    assert_eq!(stopped.err.matches("no request reached this computer").count(), 1);
+    assert_eq!(shared.lock().unwrap().ota_requests, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn reports_unusable_flash_inputs() {
     let (host, _, settings) = flash_settings(Mode::Stock).await;
     let firmware = firmware_file();

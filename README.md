@@ -270,9 +270,12 @@ rule for the migration:
 
 Everything else (control via port 80, ESPHome detection via port 6053) is
 initiated by your computer. Remove the rule afterwards. If the device cannot
-reach your computer, `flash` stops with "the device did not fetch the package" and
-nothing is changed. Set `--serve-ip` if the detected address of your computer
-is wrong.
+reach your computer, nothing is changed: `flash` says why ("no request reached
+this computer" with the exact connection to allow, a request from another
+address when a router translates addresses, or a download that stopped) and,
+keeping the same port, offers to try again once you have fixed it. With
+`--yes` it stops instead. Set `--serve-ip` if the detected address of your
+computer is wrong.
 
 ### 4. Report your device
 

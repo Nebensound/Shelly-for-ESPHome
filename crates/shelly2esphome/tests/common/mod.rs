@@ -51,6 +51,8 @@ pub struct Fake {
     pub has_actions: bool,
     pub settings_status: u16,
     pub ignore_ota: bool,
+    /// Accepts but ignores this many `/ota` requests before it acts on one.
+    pub ignored_otas: u32,
     pub ota_status: u16,
     pub skip_installing: bool,
     pub hang_after_download: bool,
@@ -88,6 +90,7 @@ pub fn fake(mode: Mode) -> Fake {
         has_actions: true,
         settings_status: 200,
         ignore_ota: false,
+        ignored_otas: 0,
         ota_status: 200,
         skip_installing: false,
         hang_after_download: false,
@@ -177,7 +180,7 @@ pub async fn ota(State(shared): State<Shared>, Query(query): Query<OtaQuery>) ->
         if fake.ota_status != 200 {
             return StatusCode::from_u16(fake.ota_status).unwrap().into_response();
         }
-        if fake.ignore_ota {
+        if fake.ignore_ota || fake.ota_requests <= fake.ignored_otas {
             return Json(serde_json::json!({ "status": "updating" })).into_response();
         }
     }
@@ -311,6 +314,10 @@ pub struct Recorder {
     pub decline: bool,
     /// Declines from this confirmation on (0 is the first).
     pub decline_from: Option<usize>,
+    /// Every problem a retry was asked for.
+    pub problems: Vec<String>,
+    /// How many retries to agree to.
+    pub retries: usize,
 }
 
 impl Reporter for Recorder {
@@ -323,6 +330,10 @@ impl Reporter for Recorder {
     fn confirm(&mut self, summary: &str) -> bool {
         self.summaries.push(summary.to_owned());
         !self.decline && self.decline_from.is_none_or(|first| self.summaries.len() <= first)
+    }
+    fn retry(&mut self, problem: &str) -> bool {
+        self.problems.push(problem.to_owned());
+        self.problems.len() <= self.retries
     }
 }
 

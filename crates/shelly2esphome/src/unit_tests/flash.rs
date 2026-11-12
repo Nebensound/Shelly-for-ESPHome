@@ -1,5 +1,7 @@
 //! Unit tests of `crate::flash` (not counted as production code for coverage).
 
+use bytes::Bytes;
+
 use super::*;
 
 #[tokio::test]
@@ -98,7 +100,7 @@ async fn names_every_failure_for_device_reports() {
         (FlashError::Package(PackageError::MissingManifest), "package-invalid"),
         (FlashError::Backup(BackupError::NotStock), "backup-failed"),
         (FlashError::Io(std::io::Error::other("no route")), "local-network"),
-        (FlashError::PackageNotFetched("10.0.0.2:8080".into()), "package-not-fetched"),
+        (FlashError::PackageNotFetched(FetchProblem::OtherAddress(1)), "package-not-fetched"),
         (FlashError::MigrationNotReachable, "migration-not-reachable"),
         (FlashError::RelocationFailed("flash".into()), "relocation-failed"),
         (FlashError::DeviceFailed("hash_mismatch".into()), "device-failed:hash_mismatch"),
@@ -164,4 +166,87 @@ fn knows_only_the_kinds_it_names() {
     ] {
         assert!(!is_report_kind(text), "{text}");
     }
+}
+
+async fn package_server(allowed_peer: IpAddr, package: Bytes) -> FileServer {
+    let bind = SocketAddr::from(([127, 0, 0, 1], 0));
+    FileServer::start(bind, package, Bytes::new(), Some(allowed_peer)).await.expect("server")
+}
+
+#[tokio::test]
+async fn tells_why_the_package_was_not_fetched() {
+    let device = IpAddr::from([127, 0, 0, 1]);
+    let idle = package_server(device, Bytes::from_static(b"zip")).await;
+    let start = FetchStart::of(&idle);
+    assert!(!start.requested(&idle));
+    assert_eq!(start.problem(&idle, 3), FetchProblem::NoRequest(idle.address()));
+
+    // A router that translates addresses: the request comes from elsewhere.
+    let translated = package_server(IpAddr::from([10, 0, 0, 2]), Bytes::new()).await;
+    let start = FetchStart::of(&translated);
+    let refused = reqwest::get(translated.url(PACKAGE_PATH)).await.expect("request");
+    assert_eq!(refused.status(), reqwest::StatusCode::FORBIDDEN);
+    assert_eq!(start.problem(&translated, 3), FetchProblem::OtherAddress(1));
+    // A new attempt only counts what happened since it started.
+    assert_eq!(
+        FetchStart::of(&translated).problem(&translated, 3),
+        FetchProblem::NoRequest(translated.address())
+    );
+
+    // The device asks, then gives up after the headers.
+    let big = Bytes::from(vec![0_u8; 8 << 20]);
+    let stopped = package_server(device, big.clone()).await;
+    let start = FetchStart::of(&stopped);
+    drop(reqwest::get(stopped.url(PACKAGE_PATH)).await.expect("request"));
+    assert!(start.requested(&stopped));
+    assert!(matches!(
+        start.problem(&stopped, big.len() as u64),
+        FetchProblem::Stopped { sent, total } if sent < total && total == 8 << 20
+    ));
+}
+
+#[test]
+fn names_the_connection_the_device_needs() {
+    let address = SocketAddr::from(([10, 10, 10, 96], 65187));
+    let no_request = FlashError::PackageNotFetched(FetchProblem::NoRequest(address)).to_string();
+    assert!(no_request.starts_with("the device did not fetch the package: no request reached"));
+    assert!(no_request.contains("open a TCP connection to 10.10.10.96:65187"));
+    assert!(no_request.ends_with("Nothing was changed."));
+    assert!(
+        FetchProblem::OtherAddress(2).to_string().starts_with("2 request(s) came from another")
+    );
+    assert!(FetchProblem::OtherAddress(2).to_string().contains("(NAT)"));
+    assert_eq!(
+        FetchProblem::Stopped { sent: 10, total: 20 }.to_string(),
+        "it stopped the download after 10 of 20 bytes. Check its Wi-Fi signal"
+    );
+}
+
+/// Answers retries from a list and records the problems.
+#[derive(Default)]
+struct Retries {
+    answers: Vec<bool>,
+    asked: Vec<String>,
+}
+
+impl Reporter for Retries {
+    fn info(&mut self, _message: &str) {}
+    fn progress(&mut self, _sent_bytes: u64, _total_bytes: u64) {}
+    fn confirm(&mut self, _summary: &str) -> bool {
+        true
+    }
+    fn retry(&mut self, problem: &str) -> bool {
+        self.asked.push(problem.to_owned());
+        self.answers.get(self.asked.len() - 1).copied().unwrap_or(false)
+    }
+}
+
+#[test]
+fn hands_the_package_over_again_only_if_asked() {
+    let mut reporter = Retries { answers: vec![true], ..Retries::default() };
+    assert!(retry(FetchProblem::OtherAddress(1), &mut reporter).is_ok());
+    let declined = retry(FetchProblem::OtherAddress(1), &mut reporter).expect_err("declined");
+    assert!(matches!(declined, FlashError::PackageNotFetched(FetchProblem::OtherAddress(1))));
+    assert_eq!(reporter.asked.len(), 2);
+    assert!(reporter.asked[0].starts_with("the device did not fetch the package: 1 request(s)"));
 }

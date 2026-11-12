@@ -37,6 +37,8 @@ pub struct Gen2 {
     pub refuse_update: Option<&'static str>,
     /// Whether the updater downloads the package.
     pub download: bool,
+    /// Accepts but ignores this many `Shelly.Update` calls before it acts on one.
+    pub ignored_updates: usize,
     pub will_write: u8,
     pub bootloader_update: bool,
     /// Whether the installer's bootloader decision reaches the log.
@@ -74,6 +76,7 @@ pub fn gen2() -> Gen2 {
         send_log: true,
         refuse_update: None,
         download: true,
+        ignored_updates: 0,
         will_write: 0,
         bootloader_update: true,
         boot_line: true,
@@ -268,6 +271,11 @@ async fn rpc(State(shared): State<Shared>, headers: HeaderMap, body: String) -> 
         "Shelly.Update" => {
             if let Some(message) = device.refuse_update {
                 return refused(-109, message);
+            }
+            let calls =
+                device.requests.iter().filter(|request| *request == "Shelly.Update").count();
+            if calls <= device.ignored_updates {
+                return reply(serde_json::Value::Null);
             }
             let url = params["url"].as_str().unwrap_or_default().to_owned();
             tokio::spawn(install(Arc::clone(&shared), url));
