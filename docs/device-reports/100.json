@@ -1,0 +1,15 @@
+{
+  "issue": 100,
+  "result": "success",
+  "model": "SHDM-2",
+  "generation": "Gen1",
+  "stock-firmware": "unknown",
+  "signal": "-71 dBm",
+  "login": "no",
+  "backup": "yes",
+  "package": "embedded",
+  "tool": "0.10.0",
+  "platform": "macos-x86_64",
+  "duration": "63 s",
+  "report-code": "3fa4759d094f1bd6"
+}
