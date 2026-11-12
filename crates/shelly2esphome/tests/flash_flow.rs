@@ -95,7 +95,7 @@ async fn backs_up_a_relay_device_without_actions() {
     let (host, _shared) = start_fake(device).await;
     let client = DeviceClient::new(&host, None);
     let saved = backup::collect(&client).await.unwrap();
-    assert_eq!(saved.info.device_type, "SHSW-PM");
+    assert_eq!(saved.device, "SHSW-PM");
     let names: Vec<&str> = saved.files.iter().map(|(name, _)| name.as_str()).collect();
     assert_eq!(names, ["shelly.json", "status.json", "settings-relay-0.json", "settings.json"]);
 }
@@ -535,4 +535,13 @@ async fn gives_up_when_the_migration_firmware_never_gets_ready() {
     options.timeouts.migration_boot = Duration::from_secs(1);
     let error = run_with(&host, Some(&package(Model::ShellyDimmer2)), &options).await.unwrap_err();
     assert!(matches!(error, FlashError::MigrationNotReachable));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leaves_later_generations_to_their_own_procedure() {
+    let (_, shared) = start_fake(fake(Mode::Stock)).await;
+    let (host, device) = common::gen2::start(common::gen2::gen2()).await;
+    let error = run_with(&host, None, &options(&shared)).await.unwrap_err();
+    assert!(matches!(error, FlashError::UnsupportedGeneration { .. }), "{error}");
+    assert!(device.lock().unwrap().requests.is_empty());
 }

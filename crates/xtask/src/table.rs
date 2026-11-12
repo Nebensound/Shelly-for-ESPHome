@@ -35,26 +35,30 @@ fn version_key(version: &str) -> (Vec<u32>, bool, String) {
 }
 
 /// The table of `reports`: one row per model, its stock firmware versions
-/// newest first.
+/// newest first. A Gen1 model shows its build name and device type, a later
+/// one its app name and generation.
 #[must_use]
 pub fn render(reports: &[Submission]) -> String {
-    let mut models: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut models: BTreeMap<&str, (&str, Vec<&str>)> = BTreeMap::new();
     for report in reports {
-        let versions = models.entry(report.get("model")).or_default();
+        let (_, versions) =
+            models.entry(report.get("model")).or_insert((report.get("generation"), Vec::new()));
         versions.extend(stock_version(report.get("stock-firmware")));
     }
     if models.is_empty() {
         return "No device reports yet.\n".to_owned();
     }
     let mut table = String::from("| Model | Stock firmware |\n|---|---|\n");
-    for (device_type, mut versions) in models {
+    for (model, (generation, mut versions)) in models {
         versions.sort_by_key(|version| version_key(version));
         versions.dedup();
         versions.reverse();
-        let name =
-            Model::from_device_type(device_type).map_or(device_type, |model| model.build_name());
+        let name = match Model::from_device_type(model) {
+            Some(gen1) => format!("{} (`{model}`)", gen1.build_name()),
+            None => format!("{model} ({generation})"),
+        };
         let firmware = if versions.is_empty() { "unknown".to_owned() } else { versions.join(", ") };
-        let _ = writeln!(table, "| {name} (`{device_type}`) | {firmware} |");
+        let _ = writeln!(table, "| {name} | {firmware} |");
     }
     table
 }

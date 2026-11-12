@@ -1,7 +1,8 @@
 # Shelly for ESPHome
 
-Flash **your own ESPHome firmware** onto Shelly Gen1 devices over the air —
-no cable, no Tasmota in between.
+Flash **your own ESPHome firmware** onto Shelly devices over the air —
+no cable, no Tasmota in between. Gen1 devices are tested on real hardware;
+Gen2 and Gen3 are not confirmed yet (see [Gen2 and Gen3](#gen2-and-gen3)).
 
 The `shelly2esphome` command line tool talks to a device running the Shelly
 stock firmware, installs a small intermediate firmware (the *migration
@@ -63,34 +64,58 @@ they started from. The table is updated once a day.
 No device reports yet.
 <!-- device-table:end -->
 
-Shelly Gen2 (ESP32) and Gen3 (ESP32-C3) devices cannot be flashed yet. `list`
-and `probe` already recognise them: `probe` shows model, app, firmware,
-the app slot the stock firmware runs from, and whether it is a beta firmware
-(betas can change the flash layout). It only sends reading requests. Support
-for these generations is being built in the milestone
-[Gen2/Gen3 over the air](https://github.com/Nebensound/Shelly-for-ESPHome/milestone/1).
-`shelly2esphome check firmware.factory.bin --app <APP>` already checks an
-ESPHome factory image against the official update package of the device:
-bootloader settings and chip, the partition table (build ESPHome with the
-device's stock partition table), an erased otadata area and the application
-in `app_0`. It then builds the package `flash` will send, in memory only
-(it contains the Wi-Fi credentials of the firmware): the official package
-with ESPHome's application and bootloader, an erased otadata and the
-bootloader `min_version` raised to 1.0.9, so the stock installer writes
-ESPHome's bootloader. Only apps whose flash layout the tool knows are built
-(the layout of the current stable firmware, 2.2.0 for most models); Shelly
-changes layouts between releases, and a package with another one is refused.
-Build ESPHome with the partition table of the current stable firmware (the
-package `check` downloads); if the device runs an older firmware, update it
-officially first. The findings about bootloader, slots and `min_version` come from
+### Gen2 and Gen3
+
+Shelly Gen2 (ESP32) and Gen3 (ESP32-C3) devices need no migration firmware:
+their stock updater installs ESPHome itself. **No model is confirmed on real
+hardware yet**; keep a UART adapter ready until one is (milestone
+[Gen2/Gen3 over the air](https://github.com/Nebensound/Shelly-for-ESPHome/milestone/1)).
+`list` and `probe` recognise these devices; `probe` shows model, app,
+firmware, the app slot the stock firmware runs from and whether it is a beta
+firmware.
+
+Build ESPHome with the device's stock partition table and keep the
+`firmware.factory.bin` of the build. `shelly2esphome check
+firmware.factory.bin --app <APP>` checks it against the official update
+package of the device: bootloader settings and chip, the partition table, an
+erased otadata area and the application in `app_0`. `<APP>` is the app name
+`probe` shows, e.g. `S1G3`. The tool downloads the current stable package
+from Shelly's update service, checks its SHA-256 and keeps it in the user's
+cache directory (`shelly2esphome/packages/<APP>/<version>.zip`); a cached
+package is checked again before every use. `--package <official.zip>` uses a
+package file instead.
+
+`check` then builds the package `flash` sends, in memory only (it contains the
+Wi-Fi credentials of the firmware): the official package with ESPHome's
+application and bootloader, an erased otadata and the bootloader
+`min_version` raised to 1.0.9, so the stock installer writes ESPHome's
+bootloader. Only apps whose flash layout the tool knows are built (the layout
+of the current stable firmware, 2.2.0 for most models); Shelly changes layouts
+between releases, and a package with another one is refused.
+
+`shelly2esphome flash <host> --firmware firmware.factory.bin` runs the
+migration. Before it changes anything it refuses when the device runs another
+firmware version than the official package (update it officially first, in
+the Shelly app or web UI, and build ESPHome with that version's partition
+table), when the package cannot be built, when the Wi-Fi signal is too weak,
+or when the web authentication needs a login (`--auth admin:password`; Gen2
+and later always use the user `admin`). After the confirmation it saves the
+stock settings (device info, the configuration of every component,
+schedules, webhooks, scripts with their code and the key-value store) into
+`shelly-backup-<model>-<mac>-<UTC time>`. Then it points the device's debug
+log at this computer for a moment (UDP, `--log-port`, default 9514) to read
+the slot the installer will write to: ESPHome's bootloader starts only
+`app_0`, so slot 1 is refused (one official update moves the stock firmware
+to the other slot), and an unknown slot is asked about. The log setting is
+put back before any refusal. Then the device downloads the package, and
+`flash` follows the installer's log: it stops with the next step if the
+installer keeps Shelly's bootloader or writes to slot 1, and waits for the
+ESPHome API otherwise. The device needs TCP to `--port` and UDP to
+`--log-port` on your computer.
+
+The findings about bootloader, slots and `min_version` come from
 [Free-Shelly OTA](https://github.com/oxynatOr/free-shelly-ota) (Apache-2.0),
-which this tool implements independently. `<APP>` is the app name `probe`
-shows, e.g. `S1G3`. The tool
-downloads the current stable package from Shelly's update service, checks its
-SHA-256 and keeps it in the user's cache directory
-(`shelly2esphome/packages/<APP>/<version>.zip`); a cached package is checked
-again before every use. `--package <official.zip>` uses a package file
-instead.
+which this tool implements independently.
 
 ## Usage
 
@@ -245,7 +270,7 @@ rule for the migration:
 
 Everything else (control via port 80, ESPHome detection via port 6053) is
 initiated by your computer. Remove the rule afterwards. If the device cannot
-reach your computer, `flash` stops with "the device did not fetch the migration package" and
+reach your computer, `flash` stops with "the device did not fetch the package" and
 nothing is changed. Set `--serve-ip` if the detected address of your computer
 is wrong.
 
@@ -254,8 +279,8 @@ is wrong.
 After `flash`, the tool prints a link to a GitHub issue form it has already
 filled in: after a success to report that the model works, after a failure to
 report the problem. Opening the link sends nothing; the report exists only once
-you submit the form. It contains the result, the device type, the stock
-firmware it came from, the Wi-Fi signal, whether a login and a backup were
+you submit the form. It contains the result, the device type (Gen1) or app
+name and generation (Gen2 and later), the stock firmware it came from, the Wi-Fi signal, whether a login and a backup were
 involved, the package source, the tool version, your computer's operating
 system and architecture and the duration. It never contains IP or MAC
 addresses, device or network names, credentials or error texts. Successful

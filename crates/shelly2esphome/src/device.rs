@@ -22,6 +22,18 @@ impl std::fmt::Debug for Credentials {
     }
 }
 
+impl Credentials {
+    /// The user name.
+    pub(crate) fn user(&self) -> &str {
+        &self.user
+    }
+
+    /// The password.
+    pub(crate) fn password(&self) -> &str {
+        &self.password
+    }
+}
+
 impl std::str::FromStr for Credentials {
     type Err = String;
 

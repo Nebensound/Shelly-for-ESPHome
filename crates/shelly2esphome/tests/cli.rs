@@ -154,7 +154,7 @@ async fn probes_the_migration_firmware() {
 }
 
 #[tokio::test]
-async fn probes_later_generations_and_refuses_to_flash_them() {
+async fn probes_later_generations() {
     let settings = Settings::default();
     let gen3 = r#"{"id":"shellyplugmg3-x","mac":"08927251CA24","slot":1,"model":"S3PL-30110EU",
         "gen":3,"ver":"2.2.0-beta2","app":"PlugMG3","auth_en":false}"#;
@@ -172,7 +172,10 @@ async fn probes_later_generations_and_refuses_to_flash_them() {
     assert!(probe.out.contains("Runs from app slot 1."));
     assert!(probe.out.contains("Wi-Fi signal: -74 dBm"));
     assert!(probe.out.contains("Beta firmware"));
-    assert!(probe.out.contains("Not supported yet: only Gen1 devices can be flashed so far."));
+    assert!(probe.out.contains(
+        "Can be flashed with the firmware.factory.bin of an ESPHome build (not yet confirmed on \
+         real hardware); check it first with check --app PlugMG3."
+    ));
 
     // A stable Gen2 with login and without slot information.
     let gen2 = r#"{"id":"shellyplus1-x","mac":"AA","model":"SNSW-001X16EU","gen":2,
@@ -181,6 +184,7 @@ async fn probes_later_generations_and_refuses_to_flash_them() {
     let probe = run(&["probe", &host], &settings).await;
     assert!(probe.out.contains("Shelly Gen2, model SNSW-001X16EU"));
     assert!(probe.out.contains("Wi-Fi signal: unknown (login enabled)"));
+    assert!(probe.out.contains("Login enabled: pass --auth admin:password."));
     assert!(!probe.out.contains("app slot"));
     assert!(!probe.out.contains("Beta firmware"));
 
@@ -196,19 +200,112 @@ async fn probes_later_generations_and_refuses_to_flash_them() {
     assert!(probe.out.contains("Wi-Fi: not connected"));
     assert!(!probe.out.contains("0 dBm"));
 
-    // flash refuses after reading only.
-    let (host, seen) = scripted(&[
-        ("/shelly", 200, gen3),
-        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"got ip","rssi":-74}"#),
+    // An app without a profile.
+    let gen4 =
+        r#"{"id":"x","mac":"AA","model":"S4SW-001X16EU","gen":4,"ver":"1.7.99","app":"S1G4"}"#;
+    let (host, _) = scripted(&[
+        ("/shelly", 200, gen4),
+        ("/rpc/Wifi.GetStatus", 200, r#"{"status":"got ip","rssi":-50}"#),
     ])
     .await;
-    let flash = run(&["flash", &host, "--firmware", &firmware_file(), "--yes"], &settings).await;
-    assert_eq!(flash.code, ExitCode::FAILURE);
-    assert!(flash.err.contains(
-        "S3PL-30110EU is a Shelly Gen3; only Gen1 devices can be flashed so far. Nothing was \
-         changed."
-    ));
-    assert_eq!(seen.lock().unwrap().len(), 2);
+    let probe = run(&["probe", &host], &settings).await;
+    assert!(probe.out.contains("Not supported: this tool does not know the flash layout of S1G4."));
+}
+
+#[tokio::test]
+async fn flashes_a_gen3_device_and_links_its_report() {
+    use shelly2esphome::esp32::synthetic::Fixture;
+    let fixture = Fixture::default();
+    let package = write_temp("S1G3.zip", &fixture.package());
+    let factory = write_temp("firmware.factory.bin", &fixture.factory());
+    let (host, device) = common::gen2::start(common::gen2::gen2()).await;
+    let mut flash = options(&std::sync::Arc::new(std::sync::Mutex::new(fake(Mode::Stock))));
+    flash.esphome_port = device.lock().unwrap().esphome_port;
+    let settings = Settings { flash, ..Settings::default() };
+    let log_port = common::gen2::log_port().to_string();
+    let backup_dir = scratch_dir().to_str().unwrap().to_owned();
+    let args = |extra: &[&str]| {
+        let mut args = vec![
+            "flash",
+            &host,
+            "--firmware",
+            &factory,
+            "--log-port",
+            &log_port,
+            "--backup-dir",
+            &backup_dir,
+            "--yes",
+        ];
+        args.extend_from_slice(extra);
+        args.into_iter().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let call = |args: Vec<String>| {
+        let settings = settings.clone();
+        async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run(&args, &settings).await
+        }
+    };
+
+    let done = call(args(&["--package", &package])).await;
+    assert_eq!(done.code, ExitCode::SUCCESS, "{}", done.err);
+    assert!(done.err.contains("Done: ESPHome answers on 127.0.0.1:"), "{}", done.err);
+    assert!(
+        done.out.contains(
+            "&model=S1G3&generation=Gen3&stock-firmware=20261026-125850%2F2.0.3-gb8c68b1&"
+        )
+    );
+    assert!(done.out.contains("&package=file&"));
+
+    // The official package from Shelly's update service.
+    let cloud = common::cloud::Cloud::start().await;
+    cloud.publish("S1G3", "2.0.3", &fixture.package());
+    let downloading = Settings { fetch: cloud.options(None), ..settings.clone() };
+    let (host, _) = common::gen2::start(common::gen2::gen2()).await;
+    let mut official_args = args(&[]);
+    official_args[1] = host;
+    let official_args: Vec<&str> = official_args.iter().map(String::as_str).collect();
+    let official = run(&official_args, &downloading).await;
+    assert_eq!(official.code, ExitCode::SUCCESS, "{}", official.err);
+    assert!(official.out.starts_with("Official package S1G3 2.0.3: downloaded from "));
+    assert!(official.out.contains("&package=official&"));
+
+    // No official package to be had.
+    let (host, _) =
+        common::gen2::start(common::gen2::Gen2 { app: "S1PMG3", ..common::gen2::gen2() }).await;
+    let mut unpublished = official_args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    unpublished[1] = host;
+    let unpublished: Vec<&str> = unpublished.iter().map(String::as_str).collect();
+    let refused = run(&unpublished, &downloading).await;
+    assert!(refused.err.contains("cannot get the official package of S1PMG3"), "{}", refused.err);
+
+    // Unreadable inputs.
+    let mut missing = args(&["--package", "/nonexistent.zip"]);
+    missing[1] = common::gen2::start(common::gen2::gen2()).await.0;
+    assert!(call(missing).await.err.contains("cannot read /nonexistent.zip"));
+    let mut no_firmware = args(&["--package", &package]);
+    no_firmware[1] = common::gen2::start(common::gen2::gen2()).await.0;
+    no_firmware[3] = "/nonexistent.bin".to_owned();
+    assert!(call(no_firmware).await.err.contains("cannot read /nonexistent.bin"));
+
+    // Gen1 and Gen2 options do not mix.
+    let migration = call(args(&["--migration", &package])).await;
+    assert!(migration.err.contains("--migration is for Gen1 devices; S3SW-001X16EU is a Gen3"));
+    let (gen1, _) = start_fake(fake(Mode::Stock)).await;
+    let mut gen1_args = args(&["--package", &package]);
+    gen1_args[1] = gen1;
+    let wrong = call(gen1_args).await;
+    assert!(wrong.err.contains("--package is for Gen2 and later devices"));
+
+    // A failure after the confirmation links a failure report.
+    let (host, _) =
+        common::gen2::start(common::gen2::Gen2 { will_write: 1, ..common::gen2::gen2() }).await;
+    let mut failed_args = args(&["--package", &package]);
+    failed_args[1] = host;
+    let failed = call(failed_args).await;
+    assert_eq!(failed.code, ExitCode::FAILURE);
+    assert!(failed.err.contains("template=device-failure.yml"));
+    assert!(failed.err.contains("&result=wrong-slot&model=S1G3&"));
 }
 
 #[tokio::test]
@@ -230,8 +327,7 @@ async fn checks_a_factory_image_against_the_official_package() {
     );
     assert!(ok.out.contains(
         "ESPHome's bootloader (min_version 1.0.9 instead of 1.0.2) and an erased otadata. It \
-         holds the Wi-Fi credentials of the firmware and is built in memory only.\nGen2/Gen3 \
-         devices cannot be flashed yet."
+         holds the Wi-Fi credentials of the firmware and is built in memory only."
     ));
     assert!(ok.out.contains("ESPHome package for S1G3: "));
     assert!(!ok.out.contains("Note:"));

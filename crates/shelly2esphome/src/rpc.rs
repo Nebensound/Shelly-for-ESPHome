@@ -105,6 +105,9 @@ pub struct DeviceInfo {
     /// Stock firmware version.
     #[serde(rename = "ver")]
     pub firmware: FirmwareVersion,
+    /// Stock firmware build, e.g. `20261109-150519/2.2.0-g7968dca`.
+    #[serde(rename = "fw_id", default)]
+    pub build: Option<String>,
     /// Application name of the stock firmware.
     pub app: AppName,
     /// Whether web authentication is enabled.

@@ -2,6 +2,7 @@
 #![allow(dead_code, missing_docs, clippy::unwrap_used)]
 
 pub mod cloud;
+pub mod gen2;
 
 use std::{
     io::{Cursor, Write},
@@ -308,6 +309,8 @@ pub struct Recorder {
     pub summaries: Vec<String>,
     pub last_progress: Option<(u64, u64)>,
     pub decline: bool,
+    /// Declines from this confirmation on (0 is the first).
+    pub decline_from: Option<usize>,
 }
 
 impl Reporter for Recorder {
@@ -319,7 +322,7 @@ impl Reporter for Recorder {
     }
     fn confirm(&mut self, summary: &str) -> bool {
         self.summaries.push(summary.to_owned());
-        !self.decline
+        !self.decline && self.decline_from.is_none_or(|first| self.summaries.len() <= first)
     }
 }
 
@@ -360,6 +363,10 @@ pub fn options(shared: &Shared) -> FlashOptions {
             flash: Duration::from_secs(10),
             esphome_boot: Duration::from_secs(5),
             poll_interval: Duration::from_millis(20),
+            slot_probe: Duration::from_secs(2),
+            settle: Duration::ZERO,
+            package_download: Duration::from_secs(5),
+            update_result: Duration::from_secs(2),
         },
         // Independent of how the test binary was built.
         embedded_packages: Packages(&[]),

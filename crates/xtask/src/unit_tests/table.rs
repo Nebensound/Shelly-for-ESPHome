@@ -42,11 +42,20 @@ fn renders_one_row_per_model() {
         report_with(16, &[("stock-firmware", "20230309-114628/v1.10.0")]),
         report_with(17, &[("model", "SHDM-2"), ("stock-firmware", "unknown")]),
         report_with(18, &[("model", "SHSW-PM")]),
+        report_with(
+            19,
+            &[
+                ("model", "S1G3"),
+                ("generation", "Gen3"),
+                ("stock-firmware", "20261109-150519/2.2.0-g7968dca"),
+            ],
+        ),
     ];
     assert_eq!(
         render(&reports),
         "| Model | Stock firmware |\n\
          |---|---|\n\
+         | S1G3 (Gen3) | 2.2.0 |\n\
          | ShellyDimmer2 (`SHDM-2`) | unknown |\n\
          | Shelly25 (`SHSW-25`) | v1.14.0, v1.14.0-rc1, v1.10.0, v1.9.4 |\n\
          | Shelly1PM (`SHSW-PM`) | v1.14.0 |\n"

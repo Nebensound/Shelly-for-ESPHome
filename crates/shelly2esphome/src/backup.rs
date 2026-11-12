@@ -1,8 +1,11 @@
 //! Backup of the stock firmware's settings before they are lost.
 //!
-//! Gen1 settings are not kept by the migration firmware or by ESPHome, so the
-//! JSON answers of the stock firmware are saved to disk: device info, status,
-//! settings, actions and the settings of every relay, light and roller.
+//! Neither the migration firmware nor ESPHome keeps the stock settings, so
+//! the JSON answers of the stock firmware are saved to disk. Gen1: device
+//! info, status, settings, actions and the settings of every relay, light
+//! and roller. Gen2 and later: device info, the configuration of every
+//! component, schedules, webhooks, scripts with their code and the key-value
+//! store.
 
 use std::{
     io,
@@ -10,7 +13,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::device::{DeviceClient, DeviceError, StockInfo};
+use crate::{
+    device::{DeviceClient, DeviceError, StockInfo},
+    rpc::DeviceInfo,
+    rpc_client::{RpcClient, RpcError},
+};
 
 /// Channel lists in `/settings` and the endpoint of one channel.
 const CHANNELS: [(&str, &str); 3] =
@@ -19,8 +26,11 @@ const CHANNELS: [(&str, &str); 3] =
 /// The collected answers, one JSON document per endpoint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Backup {
-    /// Device info (`/shelly`).
-    pub info: StockInfo,
+    /// Device type (Gen1) or model ID (Gen2 and later), for the directory
+    /// name.
+    pub device: String,
+    /// MAC address, for the directory name.
+    pub mac: String,
     /// File name (without directory) and content of every saved document.
     pub files: Vec<(String, serde_json::Value)>,
 }
@@ -31,6 +41,9 @@ pub enum BackupError {
     /// Reading from the device failed.
     #[error(transparent)]
     Device(#[from] DeviceError),
+    /// Reading from a Gen2+ device failed.
+    #[error("reading the settings failed: {0}")]
+    Rpc(#[from] RpcError),
     /// The device does not answer `/shelly` or `/settings` like the Gen1 stock firmware.
     #[error("the device does not run the Shelly Gen1 stock firmware; there is nothing to back up")]
     NotStock,
@@ -73,7 +86,91 @@ pub async fn collect(client: &DeviceClient) -> Result<Backup, BackupError> {
         files.push((file_name("/settings/actions"), actions));
     }
     files.push((file_name("/settings"), settings));
-    Ok(Backup { info, files })
+    Ok(Backup { device: info.device_type, mac: info.mac, files })
+}
+
+/// The RPC methods whose answer is saved as it is, and the file it goes to.
+/// A device without the component refuses the call; the file is left out.
+const OPTIONAL: [(&str, &str); 3] = [
+    ("Schedule.List", "schedule-list.json"),
+    ("Webhook.List", "webhook-list.json"),
+    ("Script.List", "script-list.json"),
+];
+
+/// The answer, or `None` if the device refused the call (it lacks the
+/// component).
+fn optional(
+    answer: Result<serde_json::Value, RpcError>,
+) -> Result<Option<serde_json::Value>, RpcError> {
+    match answer {
+        Ok(value) => Ok(Some(value)),
+        Err(RpcError::Refused { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// The code of script `id`, which the device hands out in pieces.
+async fn script_code(rpc: &RpcClient, id: &serde_json::Value) -> Result<String, RpcError> {
+    let mut code = String::new();
+    loop {
+        let piece = rpc
+            .call("Script.GetCode", serde_json::json!({ "id": id, "offset": code.len() }))
+            .await?;
+        let data = piece["data"].as_str().unwrap_or_default();
+        code.push_str(data);
+        if data.is_empty() || piece["left"].as_u64().unwrap_or_default() == 0 {
+            return Ok(code);
+        }
+    }
+}
+
+/// Every entry of the key-value store, which the device hands out in pages.
+async fn key_values(rpc: &RpcClient) -> Result<Option<serde_json::Value>, RpcError> {
+    let mut items = Vec::new();
+    loop {
+        let params = serde_json::json!({ "offset": items.len() });
+        let Some(page) = optional(rpc.call("KVS.GetMany", params).await)? else {
+            return Ok(None);
+        };
+        let entries = page["items"].as_array().cloned().unwrap_or_default();
+        let total = page["total"].as_u64().unwrap_or_default();
+        let done = entries.is_empty();
+        items.extend(entries);
+        if done || items.len() as u64 >= total {
+            return Ok(Some(serde_json::json!({ "items": items })));
+        }
+    }
+}
+
+/// Collects the settings of the Gen2+ device `info` describes over RPC.
+///
+/// # Errors
+/// Fails if the device cannot be read; a component it lacks is left out.
+pub async fn collect_rpc(rpc: &RpcClient, info: &DeviceInfo) -> Result<Backup, BackupError> {
+    let call = |method| rpc.call(method, serde_json::json!({}));
+    let mut files = vec![
+        ("shelly-getdeviceinfo.json".to_owned(), call("Shelly.GetDeviceInfo").await?),
+        ("shelly-getconfig.json".to_owned(), call("Shelly.GetConfig").await?),
+    ];
+    for (method, file) in OPTIONAL {
+        if let Some(answer) = optional(call(method).await)? {
+            files.push((file.to_owned(), answer));
+        }
+    }
+    let scripts = files
+        .iter()
+        .find(|(file, _)| file == "script-list.json")
+        .and_then(|(_, list)| list["scripts"].as_array().cloned())
+        .unwrap_or_default();
+    for script in scripts {
+        let code = script_code(rpc, &script["id"]).await?;
+        let file = format!("script-{}.json", script["id"]);
+        files.push((file, serde_json::json!({ "script": script, "code": code })));
+    }
+    if let Some(store) = key_values(rpc).await? {
+        files.push(("kvs-getmany.json".to_owned(), store));
+    }
+    Ok(Backup { device: info.model.to_string(), mac: info.mac.clone(), files })
 }
 
 /// `YYYYMMDDTHHMMSSZ` for `unix_seconds` (UTC).
@@ -131,8 +228,8 @@ impl Backup {
     fn write_to_at(&self, parent: &Path, unix_seconds: u64) -> Result<PathBuf, BackupError> {
         let name = format!(
             "shelly-backup-{}-{}-{}",
-            safe_component(&self.info.device_type),
-            safe_component(&self.info.mac),
+            safe_component(&self.device),
+            safe_component(&self.mac),
             utc_timestamp(unix_seconds)
         );
         std::fs::create_dir_all(parent)

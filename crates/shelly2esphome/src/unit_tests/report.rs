@@ -6,7 +6,7 @@ fn full() -> Report {
     Report {
         result: SUCCESS.to_owned(),
         facts: DeviceFacts {
-            model: Some(Model::Shelly25),
+            model: Some(ReportedModel::Gen1(Model::Shelly25)),
             stock_firmware: Some("20230913-114008/v1.14.0-gcb84623".into()),
             rssi_dbm: Some(-67),
             login: Some(true),
@@ -47,7 +47,7 @@ fn fills_every_field_and_marks_unknowns() {
         [
             "device-unreachable",
             "unknown",
-            "Gen1",
+            "unknown",
             "unknown",
             "unknown",
             "unknown",
@@ -72,6 +72,9 @@ fn keeps_only_stock_build_identifiers() {
         "20230309-114628/v1.13.0-rc1-g1234567",
         "20221027-091427/v1.12.1-beta2",
         "20221027-091427/v1.12.1",
+        // Gen2 and later: no v.
+        "20261109-150519/2.2.0-g7968dca",
+        "20261026-125850/2.2.0-beta2-gb8c68b1",
     ] {
         assert_eq!(with(build), build);
     }
@@ -81,7 +84,6 @@ fn keeps_only_stock_build_identifiers() {
         "2023091-114008/v1.14.0",                                     // date too short
         "20230913x114008/v1.14.0",                                    // no dash
         "20230913-11400a/v1.14.0",                                    // not digits
-        "20230913-114008/1.14.0",                                     // no v
         "20230913-114008/v",                                          // nothing after v
         "20230913-114008/v1.14.0 admin:secret",                       // free text
         "20230913-114008/v1.14.0-my-kitchen-light",                   // a name after the version
@@ -95,6 +97,29 @@ fn keeps_only_stock_build_identifiers() {
     ] {
         assert_eq!(with(text), "unknown", "{text}");
     }
+}
+
+#[test]
+fn reports_a_gen3_device_by_its_app() {
+    let report = Report {
+        result: SUCCESS.to_owned(),
+        facts: DeviceFacts {
+            model: Some(ReportedModel::Newer {
+                app: "S1G3".parse().expect("app"),
+                generation: crate::rpc::Generation::try_from(3).expect("generation"),
+            }),
+            stock_firmware: Some("20261109-150519/2.2.0-g7968dca".into()),
+            package: Some(PackageSource::Official),
+            ..DeviceFacts::default()
+        },
+        duration: Duration::from_secs(80),
+    };
+    let fields = report.fields();
+    assert_eq!(fields[1], ("model", "S1G3".to_owned()));
+    assert_eq!(fields[2], ("generation", "Gen3".to_owned()));
+    assert_eq!(fields[3], ("stock-firmware", "20261109-150519/2.2.0-g7968dca".to_owned()));
+    assert_eq!(fields[7], ("package", "official".to_owned()));
+    assert!(report.url().contains("&title=Device%20report%3A%20S1G3%20works&"));
 }
 
 #[test]
