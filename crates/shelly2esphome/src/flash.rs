@@ -256,7 +256,7 @@ pub enum FlashError {
     #[error("aborted, nothing was changed")]
     Aborted,
     /// The stock firmware did not download the package.
-    #[error("the device did not fetch the package: {0}. Nothing was changed.")]
+    #[error("the device did not fetch the package: {0}. The device keeps its firmware.")]
     PackageNotFetched(FetchProblem),
     /// The migration firmware did not show up after the stock OTA.
     #[error(
@@ -526,7 +526,7 @@ pub enum FetchProblem {
     /// This many requests came from another address than the device's and
     /// were refused.
     OtherAddress(u32),
-    /// The device stopped the download after `sent` of `total` bytes.
+    /// The device had fetched `sent` of `total` bytes when the wait ended.
     Stopped {
         /// Bytes handed to the network for the last request.
         sent: u64,
@@ -552,7 +552,8 @@ impl fmt::Display for FetchProblem {
             ),
             Self::Stopped { sent, total } => write!(
                 f,
-                "it stopped the download after {sent} of {total} bytes. Check its Wi-Fi signal"
+                "it had fetched {sent} of {total} bytes when the wait ended. Check its Wi-Fi \
+                 signal"
             ),
         }
     }
@@ -813,6 +814,11 @@ pub async fn run(
                 match wait_for_package(&server, &options.timeouts, start, package_total).await {
                     Ok(()) => break,
                     Err(problem) => retry(problem, reporter)?,
+                }
+                // A slow download may have finished while the question was
+                // open; the device then restarts and takes no new /ota.
+                if server.package_stats().completed() > 0 {
+                    break;
                 }
             }
             reporter.info("Migration package fetched, device restarts …");

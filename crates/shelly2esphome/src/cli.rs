@@ -123,7 +123,7 @@ enum Command {
         /// Skip the automatic backup of the stock settings.
         #[arg(long)]
         no_backup: bool,
-        /// Do not ask for confirmation.
+        /// Do not ask for confirmation; stop instead of offering to try again.
         #[arg(long)]
         yes: bool,
     },

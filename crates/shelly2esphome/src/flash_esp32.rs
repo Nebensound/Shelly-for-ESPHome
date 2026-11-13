@@ -279,6 +279,7 @@ pub async fn run(
                     match update(&rpc, &mut log, &server, total, &options.timeouts, reporter).await
                     {
                         Err(FlashError::PackageNotFetched(problem)) => {
+                            // Not `?`: the log setting must still be put back below.
                             if let Err(error) = retry(problem, reporter) {
                                 break Err(error);
                             }

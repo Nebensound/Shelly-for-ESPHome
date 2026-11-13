@@ -211,14 +211,14 @@ fn names_the_connection_the_device_needs() {
     let no_request = FlashError::PackageNotFetched(FetchProblem::NoRequest(address)).to_string();
     assert!(no_request.starts_with("the device did not fetch the package: no request reached"));
     assert!(no_request.contains("open a TCP connection to 10.10.10.96:65187"));
-    assert!(no_request.ends_with("Nothing was changed."));
+    assert!(no_request.ends_with("The device keeps its firmware."));
     assert!(
         FetchProblem::OtherAddress(2).to_string().starts_with("2 request(s) came from another")
     );
     assert!(FetchProblem::OtherAddress(2).to_string().contains("(NAT)"));
     assert_eq!(
         FetchProblem::Stopped { sent: 10, total: 20 }.to_string(),
-        "it stopped the download after 10 of 20 bytes. Check its Wi-Fi signal"
+        "it had fetched 10 of 20 bytes when the wait ended. Check its Wi-Fi signal"
     );
 }
 

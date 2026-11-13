@@ -272,7 +272,7 @@ async fn reports_when_the_package_is_never_fetched() {
             .await
             .unwrap_err();
     assert!(matches!(error, FlashError::PackageNotFetched(FetchProblem::NoRequest(_))));
-    assert!(error.to_string().contains("Nothing was changed"));
+    assert!(error.to_string().contains("The device keeps its firmware"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -304,6 +304,20 @@ async fn hands_the_package_over_again_once_the_device_can_fetch_it() {
         .unwrap_err();
     assert!(matches!(error, FlashError::PackageNotFetched(FetchProblem::NoRequest(_))));
     assert_eq!(shared.lock().unwrap().ota_requests, 1);
+
+    // The download finishes while the question is open: no second /ota,
+    // the device already restarts into the migration firmware.
+    let mut device = fake(Mode::Stock);
+    device.ota_delay = Duration::from_millis(300);
+    let (host, shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None);
+    let mut late = common::options(&shared);
+    late.timeouts.package_fetch = Duration::from_millis(100);
+    let mut recorder =
+        Recorder { retries: 1, retry_pause: Duration::from_millis(600), ..Recorder::default() };
+    flash::run(&host, &client, &image(), Some(&package), &late, &mut recorder).await.unwrap();
+    assert_eq!(shared.lock().unwrap().ota_requests, 1);
+    assert_eq!(recorder.problems.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
