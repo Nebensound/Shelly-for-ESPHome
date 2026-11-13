@@ -10,7 +10,7 @@ use shelly2esphome::{
     backup::{self, BackupError},
     device::{DeviceClient, DeviceError, MigrationState},
     embedded::Packages,
-    flash::{self, FlashError, FlashOptions},
+    flash::{self, FetchProblem, FlashError, FlashOptions},
     image::{FirmwareImage, synthetic},
     migration::{MigrationPackage, PackageError},
     model::Model,
@@ -271,8 +271,53 @@ async fn reports_when_the_package_is_never_fetched() {
         flash::run(&host, &client, &image(), Some(&package), &options, &mut Recorder::default())
             .await
             .unwrap_err();
-    assert!(matches!(error, FlashError::PackageNotFetched(_)));
-    assert!(error.to_string().contains("Nothing was changed"));
+    assert!(matches!(error, FlashError::PackageNotFetched(FetchProblem::NoRequest(_))));
+    assert!(error.to_string().contains("The device keeps its firmware"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn hands_the_package_over_again_once_the_device_can_fetch_it() {
+    // The first attempt goes nowhere (a closed port), the second one works.
+    let mut device = fake(Mode::Stock);
+    device.ignored_otas = 1;
+    let (host, shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None);
+    let mut options = options(&shared);
+    options.timeouts.package_fetch = Duration::from_millis(300);
+    let package = package(Model::ShellyDimmer2);
+    let mut recorder = Recorder { retries: 1, ..Recorder::default() };
+    flash::run(&host, &client, &image(), Some(&package), &options, &mut recorder).await.unwrap();
+    assert_eq!(shared.lock().unwrap().ota_requests, 2);
+    assert_eq!(recorder.problems.len(), 1);
+    assert!(recorder.problems[0].contains("no request reached this computer"));
+
+    // Declined: the run stops with that problem.
+    let mut device = fake(Mode::Stock);
+    device.ignored_otas = 1;
+    let (host, shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None);
+    let mut declined = common::options(&shared);
+    declined.timeouts.package_fetch = Duration::from_millis(200);
+    let mut recorder = Recorder::default();
+    let error = flash::run(&host, &client, &image(), Some(&package), &declined, &mut recorder)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, FlashError::PackageNotFetched(FetchProblem::NoRequest(_))));
+    assert_eq!(shared.lock().unwrap().ota_requests, 1);
+
+    // The download finishes while the question is open: no second /ota,
+    // the device already restarts into the migration firmware.
+    let mut device = fake(Mode::Stock);
+    device.ota_delay = Duration::from_millis(300);
+    let (host, shared) = start_fake(device).await;
+    let client = DeviceClient::new(&host, None);
+    let mut late = common::options(&shared);
+    late.timeouts.package_fetch = Duration::from_millis(100);
+    let mut recorder =
+        Recorder { retries: 1, retry_pause: Duration::from_millis(600), ..Recorder::default() };
+    flash::run(&host, &client, &image(), Some(&package), &late, &mut recorder).await.unwrap();
+    assert_eq!(shared.lock().unwrap().ota_requests, 1);
+    assert_eq!(recorder.problems.len(), 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

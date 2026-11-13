@@ -17,8 +17,8 @@ use crate::{
     device::Credentials,
     esphome_package::EsphomePackage,
     flash::{
-        FlashError, FlashOptions, FlashOutcome, Reporter, Timeouts, local_ip_towards, resolve,
-        wait_for_esphome,
+        FetchStart, FlashError, FlashOptions, FlashOutcome, Reporter, Timeouts, local_ip_towards,
+        resolve, retry, wait_for_esphome,
     },
     profile::BOOT_MIN_VERSION,
     report::{DeviceFacts, PackageSource, ReportedModel},
@@ -134,9 +134,13 @@ async fn update(
     timeouts: &Timeouts,
     reporter: &mut dyn Reporter,
 ) -> Result<bool, FlashError> {
+    let start = FetchStart::of(server);
     rpc.call("Shelly.Update", serde_json::json!({ "url": server.url(PACKAGE_PATH) }))
         .await
         .map_err(refusal)?;
+    // Without any request the download will not come: stop well before the
+    // limit of a slow download.
+    let fetch_deadline = Instant::now() + timeouts.package_fetch;
     let download_deadline = Instant::now() + timeouts.package_download;
     let mut result_deadline = None;
     let mut bootloader_written = false;
@@ -166,12 +170,16 @@ async fn update(
             }
             Some(LogEvent::CoreDumpTarget(_)) | None => {}
         }
-        if Instant::now() >= limit {
+        let now = Instant::now();
+        match result_deadline {
             // Downloaded but not confirmed: whether ESPHome answers decides.
-            return match result_deadline {
-                Some(_) => Ok(bootloader_written),
-                None => Err(FlashError::PackageNotFetched(server.address().to_string())),
-            };
+            Some(deadline) if now >= deadline => return Ok(bootloader_written),
+            None if now >= download_deadline
+                || (now >= fetch_deadline && !start.requested(server)) =>
+            {
+                return Err(FlashError::PackageNotFetched(start.problem(server, total)));
+            }
+            _ => {}
         }
     }
 }
@@ -267,7 +275,18 @@ pub async fn run(
         {
             Ok(server) => {
                 reporter.info("Handing the ESPHome package to the stock updater …");
-                update(&rpc, &mut log, &server, total, &options.timeouts, reporter).await
+                loop {
+                    match update(&rpc, &mut log, &server, total, &options.timeouts, reporter).await
+                    {
+                        Err(FlashError::PackageNotFetched(problem)) => {
+                            // Not `?`: the log setting must still be put back below.
+                            if let Err(error) = retry(problem, reporter) {
+                                break Err(error);
+                            }
+                        }
+                        other => break other,
+                    }
+                }
             }
             Err(error) => Err(error.into()),
         };

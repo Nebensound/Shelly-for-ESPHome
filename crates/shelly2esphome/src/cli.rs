@@ -123,7 +123,7 @@ enum Command {
         /// Skip the automatic backup of the stock settings.
         #[arg(long)]
         no_backup: bool,
-        /// Do not ask for confirmation.
+        /// Do not ask for confirmation; stop instead of offering to try again.
         #[arg(long)]
         yes: bool,
     },
@@ -188,6 +188,18 @@ impl<'t, 'a> Console<'t, 'a> {
     }
 }
 
+impl Console<'_, '_> {
+    /// Shows `prompt` and reads the answer; only "yes" agrees.
+    fn ask(&mut self, prompt: &str) -> bool {
+        let _ = write!(self.terminal.err, "{prompt}");
+        let _ = self.terminal.err.flush();
+        let mut answer = String::new();
+        let input = &mut *self.terminal.input;
+        let read = tokio::task::block_in_place(|| input.read_line(&mut answer));
+        read.is_ok() && answer.trim().eq_ignore_ascii_case("yes")
+    }
+}
+
 impl Reporter for Console<'_, '_> {
     fn info(&mut self, message: &str) {
         if std::mem::take(&mut self.progress_open) {
@@ -211,15 +223,18 @@ impl Reporter for Console<'_, '_> {
 
     fn confirm(&mut self, summary: &str) -> bool {
         let _ = writeln!(self.terminal.err, "\n{summary}\n");
+        self.assume_yes || self.ask("Continue? Type \"yes\" to confirm: ")
+    }
+
+    fn retry(&mut self, problem: &str) -> bool {
+        // Unattended runs stop; the error is printed once, by the caller.
         if self.assume_yes {
-            return true;
+            return false;
         }
-        let _ = write!(self.terminal.err, "Continue? Type \"yes\" to confirm: ");
-        let _ = self.terminal.err.flush();
-        let mut answer = String::new();
-        let input = &mut *self.terminal.input;
-        let read = tokio::task::block_in_place(|| input.read_line(&mut answer));
-        read.is_ok() && answer.trim().eq_ignore_ascii_case("yes")
+        // The leading line break ends an open progress line.
+        self.progress_open = false;
+        let _ = writeln!(self.terminal.err, "\n{problem}\n");
+        self.ask("Fix that, then type \"yes\" to try again: ")
     }
 
     fn learned(&mut self, facts: &DeviceFacts) {

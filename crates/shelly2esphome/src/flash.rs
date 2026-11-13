@@ -5,6 +5,7 @@
 //! firmware only overwrites the bootloader after it has verified the image.
 
 use std::{
+    fmt,
     net::{IpAddr, SocketAddr, UdpSocket},
     path::PathBuf,
     time::Duration,
@@ -124,6 +125,10 @@ pub trait Reporter {
     fn progress(&mut self, sent_bytes: u64, total_bytes: u64);
     /// Asks before the first change to the device; `false` aborts.
     fn confirm(&mut self, summary: &str) -> bool;
+    /// The device did not fetch the package (`problem` says why); asks
+    /// whether to hand it over again. Nothing on the device has changed yet;
+    /// `false` stops the run.
+    fn retry(&mut self, problem: &str) -> bool;
     /// What the run has learned about the device so far, for the device
     /// report; called whenever it grows.
     fn learned(&mut self, _facts: &DeviceFacts) {}
@@ -251,11 +256,8 @@ pub enum FlashError {
     #[error("aborted, nothing was changed")]
     Aborted,
     /// The stock firmware did not download the package.
-    #[error(
-        "the device did not fetch the package. Can it reach this computer ({0})? \
-         Check firewall/VLAN or set --serve-ip. Nothing was changed."
-    )]
-    PackageNotFetched(String),
+    #[error("the device did not fetch the package: {0}. The device keeps its firmware.")]
+    PackageNotFetched(FetchProblem),
     /// The migration firmware did not show up after the stock OTA.
     #[error(
         "the migration firmware does not answer. Restart the device and run the command again; \
@@ -516,15 +518,97 @@ fn resume_summary(image: &FirmwareImage, last_error: &str) -> String {
     )
 }
 
+/// Why the device did not fetch the package from the file server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FetchProblem {
+    /// No request reached the file server listening at this address.
+    NoRequest(SocketAddr),
+    /// This many requests came from another address than the device's and
+    /// were refused.
+    OtherAddress(u32),
+    /// The device had fetched `sent` of `total` bytes when the wait ended.
+    Stopped {
+        /// Bytes handed to the network for the last request.
+        sent: u64,
+        /// Size of the package.
+        total: u64,
+    },
+}
+
+impl fmt::Display for FetchProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoRequest(address) => write!(
+                f,
+                "no request reached this computer. The device must be able to open a TCP \
+                 connection to {address}: allow that in the firewall and between the networks \
+                 (VLAN), or set --serve-ip if that is not this computer's address"
+            ),
+            Self::OtherAddress(count) => write!(
+                f,
+                "{count} request(s) came from another address than the device's and were \
+                 refused. A router between the networks probably translates the addresses \
+                 (NAT); run flash from a computer in the device's network"
+            ),
+            Self::Stopped { sent, total } => write!(
+                f,
+                "it had fetched {sent} of {total} bytes when the wait ended. Check its Wi-Fi \
+                 signal"
+            ),
+        }
+    }
+}
+
+/// What the file server had seen when the package was handed to the device;
+/// tells apart what happened since.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FetchStart {
+    requests: u64,
+    rejected: u32,
+}
+
+impl FetchStart {
+    pub(crate) fn of(server: &FileServer) -> Self {
+        Self { requests: server.package_stats().requests(), rejected: server.rejected_requests() }
+    }
+
+    /// Whether the device has asked for the package since.
+    pub(crate) fn requested(self, server: &FileServer) -> bool {
+        server.package_stats().requests() > self.requests
+    }
+
+    /// Why the package has not been fetched since; `total` is its size.
+    pub(crate) fn problem(self, server: &FileServer, total: u64) -> FetchProblem {
+        let rejected = server.rejected_requests().saturating_sub(self.rejected);
+        if self.requested(server) {
+            FetchProblem::Stopped { sent: server.package_stats().sent_bytes(), total }
+        } else if rejected > 0 {
+            FetchProblem::OtherAddress(rejected)
+        } else {
+            FetchProblem::NoRequest(server.address())
+        }
+    }
+}
+
+/// Asks whether to hand the package over again after `problem`.
+///
+/// # Errors
+/// Returns [`FlashError::PackageNotFetched`] if the user does not want to.
+pub(crate) fn retry(problem: FetchProblem, reporter: &mut dyn Reporter) -> Result<(), FlashError> {
+    let error = FlashError::PackageNotFetched(problem);
+    if reporter.retry(&error.to_string()) { Ok(()) } else { Err(error) }
+}
+
 async fn wait_for_package(
     server: &FileServer,
     timeouts: &Timeouts,
-    serve_address: SocketAddr,
-) -> Result<(), FlashError> {
+    start: FetchStart,
+    total: u64,
+) -> Result<(), FetchProblem> {
     let deadline = Instant::now() + timeouts.package_fetch;
     while server.package_stats().completed() == 0 {
         if Instant::now() >= deadline {
-            return Err(FlashError::PackageNotFetched(serve_address.to_string()));
+            return Err(start.problem(server, total));
         }
         sleep(timeouts.poll_interval).await;
     }
@@ -711,6 +795,7 @@ pub async fn run(
     };
 
     let package_bytes = stock.map(|package| package.bytes().clone()).unwrap_or_default();
+    let package_total = package_bytes.len() as u64;
     let server = FileServer::start(
         SocketAddr::new(serve_ip, options.serve_port),
         package_bytes,
@@ -723,8 +808,19 @@ pub async fn run(
         Some(status) => (client.clone(), status),
         None => {
             reporter.info("Handing the migration firmware to the device …");
-            client.start_stock_ota(&server.url(PACKAGE_PATH)).await?;
-            wait_for_package(&server, &options.timeouts, server.address()).await?;
+            loop {
+                let start = FetchStart::of(&server);
+                client.start_stock_ota(&server.url(PACKAGE_PATH)).await?;
+                match wait_for_package(&server, &options.timeouts, start, package_total).await {
+                    Ok(()) => break,
+                    Err(problem) => retry(problem, reporter)?,
+                }
+                // A slow download may have finished while the question was
+                // open; the device then restarts and takes no new /ota.
+                if server.package_stats().completed() > 0 {
+                    break;
+                }
+            }
             reporter.info("Migration package fetched, device restarts …");
             // The migration firmware always listens on its own port.
             let migration_host =
