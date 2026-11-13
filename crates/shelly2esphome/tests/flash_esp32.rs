@@ -306,11 +306,34 @@ async fn waits_for_a_fresh_device_and_for_esphome() {
     fresh.result.as_ref().expect("flashed");
     assert!(fresh.recorder.messages.iter().any(|message| message.ends_with("waiting 1 s")));
 
+    let note = "whether it wrote ESPHome's bootloader is unknown";
+    assert!(!fresh.recorder.messages.iter().any(|message| message.contains(note)));
+
+    // The bootloader decision got lost: ESPHome may answer only until a
+    // few restarts, so the run says that it is unconfirmed.
+    let unconfirmed = run(Gen2 { boot_line: false, ..gen2::gen2() }).await;
+    unconfirmed.result.as_ref().expect("flashed");
+    assert!(unconfirmed.recorder.messages.iter().any(|message| message.contains(note)));
+
+    // ESPHome does not come and the stock firmware still answers: the log
+    // setting is put back, and the run says why.
     let silent = run_with(Gen2 { open_esphome_port: false, ..gen2::gen2() }, |setup| {
         setup.options.timeouts.esphome_boot = Duration::from_millis(300);
     })
     .await;
     assert!(matches!(silent.result, Err(FlashError::EsphomeNotSeen(_))));
+    assert_eq!(silent.requests().last().map(String::as_str), Some("log -> null"));
+    let still_stock = "The Shelly firmware still answers, so ESPHome is not running";
+    assert!(silent.recorder.messages.iter().any(|message| message.starts_with(still_stock)));
+
+    // Nothing answers the log setting either: no claim about the firmware.
+    let gone =
+        run_with(Gen2 { open_esphome_port: false, fail_restore: true, ..gen2::gen2() }, |setup| {
+            setup.options.timeouts.esphome_boot = Duration::from_millis(300)
+        })
+        .await;
+    assert!(matches!(gone.result, Err(FlashError::EsphomeNotSeen(_))));
+    assert!(!gone.recorder.messages.iter().any(|message| message.starts_with(still_stock)));
 }
 
 #[tokio::test]
@@ -362,6 +385,11 @@ async fn backs_up_only_when_asked_and_stops_when_it_cannot() {
         run_with(gen2::gen2(), |setup| setup.options.backup_dir = Some(file.join("x"))).await;
     assert!(blocked.error().starts_with("could not write the backup"), "{}", blocked.error());
     assert!(!blocked.log_changed());
+
+    // A script cut inside a character would be saved garbled: stop instead.
+    let garbled = run(Gen2 { garbled_script: true, ..gen2::gen2() }).await;
+    assert!(garbled.error().starts_with("the code of script 1 did not arrive intact"));
+    assert!(!garbled.log_changed());
 }
 
 #[tokio::test]

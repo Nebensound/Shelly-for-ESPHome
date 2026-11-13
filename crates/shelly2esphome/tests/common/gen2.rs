@@ -39,6 +39,10 @@ pub struct Gen2 {
     pub download: bool,
     pub will_write: u8,
     pub bootloader_update: bool,
+    /// Whether the installer's bootloader decision reaches the log.
+    pub boot_line: bool,
+    /// Hands out script code with a character cut in half.
+    pub garbled_script: bool,
     pub report_success: bool,
     pub open_esphome_port: bool,
     pub without_scripts: bool,
@@ -72,6 +76,8 @@ pub fn gen2() -> Gen2 {
         download: true,
         will_write: 0,
         bootloader_update: true,
+        boot_line: true,
+        garbled_script: false,
         report_success: true,
         open_esphome_port: true,
         without_scripts: false,
@@ -151,14 +157,13 @@ fn refused(code: i64, message: &str) -> Response {
 async fn install(shared: Shared, url: String) {
     let (download, addr, lines, open, port) = {
         let device = shared.lock().unwrap();
-        let lines = vec![
-            format!("shos_ota Will write to slot {}", device.will_write),
-            format!(
+        let mut lines = vec![format!("shos_ota Will write to slot {}", device.will_write)];
+        if device.boot_line {
+            lines.push(format!(
                 "shos_ota Boot: cur 010002ff, new 00000000, min 010009ff, update? {}",
                 u8::from(device.bootloader_update)
-            ),
-        ];
-        let mut lines = lines;
+            ));
+        }
         if device.report_success {
             lines.push("shos_ota Update succeeded".to_owned());
         }
@@ -217,6 +222,9 @@ async fn rpc(State(shared): State<Shared>, headers: HeaderMap, body: String) -> 
         "Webhook.List" => reply(serde_json::json!({ "hooks": [] })),
         "Script.List" | "KVS.GetMany" if device.without_scripts => refused(-114, "No such method"),
         "Script.List" => reply(serde_json::json!({ "scripts": [{ "id": 1, "name": "blink" }] })),
+        "Script.GetCode" if device.garbled_script => {
+            reply(serde_json::json!({ "data": "// gr\u{FFFD}n", "left": 0 }))
+        }
         "Script.GetCode" => {
             let code = "let on = true;\nShelly.call('Switch.Toggle', {id: 0});\n";
             let offset = usize::try_from(params["offset"].as_u64().unwrap()).unwrap();

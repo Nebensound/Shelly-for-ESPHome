@@ -105,23 +105,27 @@ async fn check_slot(
     if reporter.confirm(&question) { Ok(()) } else { Err(FlashError::Aborted) }
 }
 
+/// What a refused update leaves behind.
+const UNCHANGED: &str = "The firmware was not changed; the device log setting is put back.";
+
 /// `Shelly.Update` refused, in words for the user.
 fn refusal(error: RpcError) -> FlashError {
     match error {
         RpcError::Refused { message, .. } if message.to_lowercase().contains("not committed") => {
             FlashError::UpdateRefused(format!(
                 "{message}. Right after a start the stock firmware accepts an update only once it \
-                 has confirmed itself; run flash again in two minutes. Nothing was changed."
+                 has confirmed itself; run flash again in two minutes. {UNCHANGED}"
             ))
         }
         RpcError::Refused { message, .. } => {
-            FlashError::UpdateRefused(format!("{message}. Nothing was changed."))
+            FlashError::UpdateRefused(format!("{message}. {UNCHANGED}"))
         }
         other => other.into(),
     }
 }
 
-/// Hands the package to the stock updater and follows the installation.
+/// Hands the package to the stock updater and follows the installation;
+/// `true` if the log showed that it writes ESPHome's bootloader.
 async fn update(
     rpc: &RpcClient,
     log: &mut UdpLog,
@@ -129,12 +133,13 @@ async fn update(
     total: u64,
     timeouts: &Timeouts,
     reporter: &mut dyn Reporter,
-) -> Result<(), FlashError> {
+) -> Result<bool, FlashError> {
     rpc.call("Shelly.Update", serde_json::json!({ "url": server.url(PACKAGE_PATH) }))
         .await
         .map_err(refusal)?;
     let download_deadline = Instant::now() + timeouts.package_download;
     let mut result_deadline = None;
+    let mut bootloader_written = false;
     loop {
         reporter.progress(server.package_stats().sent_bytes(), total);
         if result_deadline.is_none() && server.package_stats().completed() > 0 {
@@ -150,20 +155,21 @@ async fn update(
             Some(LogEvent::WillWrite(slot)) => return Err(FlashError::WrongSlotWritten(slot)),
             Some(LogEvent::Bootloader { update: true, .. }) => {
                 reporter.info("The stock installer writes ESPHome's bootloader");
+                bootloader_written = true;
             }
             Some(LogEvent::Bootloader { installed, minimum, update: false }) => {
                 return Err(FlashError::BootloaderKept { installed, minimum });
             }
             Some(LogEvent::Succeeded) => {
                 reporter.info("The stock installer reports success; the device restarts");
-                return Ok(());
+                return Ok(bootloader_written);
             }
             Some(LogEvent::CoreDumpTarget(_)) | None => {}
         }
         if Instant::now() >= limit {
             // Downloaded but not confirmed: whether ESPHome answers decides.
             return match result_deadline {
-                Some(_) => Ok(()),
+                Some(_) => Ok(bootloader_written),
                 None => Err(FlashError::PackageNotFetched(server.address().to_string())),
             };
         }
@@ -224,6 +230,7 @@ pub async fn run(
             return Err(FlashError::WeakSignal { rssi_dbm, min_rssi_dbm: options.min_rssi_dbm });
         }
     }
+    let uptime_read = Instant::now();
     let status = rpc.call("Sys.GetStatus", serde_json::json!({})).await?;
     let uptime = std::time::Duration::from_secs(status["uptime"].as_u64().unwrap_or_default());
     if !reporter.confirm(&summary(info, signal, &package)) {
@@ -239,15 +246,18 @@ pub async fn run(
     let total = package.bytes().len() as u64;
     let local = SocketAddr::new(serve_ip, options.log_port);
     let mut log = UdpLog::start(&rpc, device_address.ip(), local).await?;
-    let mut result = check_slot(&mut log, options, reporter).await;
+    let mut result = check_slot(&mut log, options, reporter).await.map(|()| false);
     if result.is_ok() {
-        if let Some(rest) =
-            options.timeouts.settle.checked_sub(uptime).filter(|rest| !rest.is_zero())
+        if let Some(rest) = options
+            .timeouts
+            .settle
+            .checked_sub(uptime + uptime_read.elapsed())
+            .filter(|rest| !rest.is_zero())
         {
             reporter.info(&format!(
                 "The stock firmware accepts an update only after it has run for a while; waiting \
                  {} s",
-                rest.as_secs()
+                rest.as_millis().div_ceil(1000)
             ));
             sleep(rest).await;
         }
@@ -262,10 +272,8 @@ pub async fn run(
             Err(error) => Err(error.into()),
         };
     }
-    match result {
-        // The device now restarts into ESPHome; the log setting went with
-        // the stock firmware.
-        Ok(()) => drop(log),
+    let bootloader_written = match result {
+        Ok(written) => written,
         Err(error) => {
             if let Err(restore) = log.restore(&rpc).await {
                 reporter
@@ -273,11 +281,32 @@ pub async fn run(
             }
             return Err(error);
         }
+    };
+    if !bootloader_written {
+        // The line that tells a kept Shelly bootloader apart got lost or
+        // came late; ESPHome answers in that case too, until a few restarts.
+        reporter.info(
+            "Note: the stock installer's decision about the bootloader did not arrive in the \
+             device log, so whether it wrote ESPHome's bootloader is unknown. If the device \
+             returns to the Shelly firmware after a few restarts, see Recovery in the README.",
+        );
     }
     reporter.progress(total, total);
     reporter.info("Waiting for ESPHome …");
     let esphome_address = SocketAddr::new(device_address.ip(), options.esphome_port);
-    wait_for_esphome(esphome_address, &options.timeouts).await?;
+    if let Err(error) = wait_for_esphome(esphome_address, &options.timeouts).await {
+        // Only the stock firmware takes the log setting: if that works, it
+        // still runs.
+        if log.restore(&rpc).await.is_ok() {
+            reporter.info(
+                "The Shelly firmware still answers, so ESPHome is not running; the device log \
+                 setting was put back",
+            );
+        }
+        return Err(error);
+    }
+    // ESPHome runs; the log setting went with the stock firmware.
+    drop(log);
     Ok(FlashOutcome { esphome_address })
 }
 

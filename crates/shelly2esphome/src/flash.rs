@@ -424,7 +424,7 @@ impl FlashError {
                 "device-unreachable"
             }
             Self::Rpc(RpcError::Status { .. } | RpcError::Unreadable(_)) => "device-http-status",
-            Self::Rpc(RpcError::Refused { .. }) => "device-refused",
+            Self::Rpc(RpcError::Refused { .. } | RpcError::AuthUnsupported) => "device-refused",
             Self::Log(_) => "log-unavailable",
             Self::UpdateRefused(_) => "update-refused",
             Self::WrongSlotWritten(_) => "wrong-slot",

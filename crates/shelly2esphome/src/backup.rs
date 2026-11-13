@@ -44,6 +44,13 @@ pub enum BackupError {
     /// Reading from a Gen2+ device failed.
     #[error("reading the settings failed: {0}")]
     Rpc(#[from] RpcError),
+    /// A script did not arrive intact: its pieces contain bytes that are no
+    /// UTF-8, e.g. a piece cut inside a character.
+    #[error(
+        "the code of script {0} did not arrive intact (a piece is no valid UTF-8); the backup \
+         would not hold it, so the run stops before any change"
+    )]
+    ScriptGarbled(String),
     /// The device does not answer `/shelly` or `/settings` like the Gen1 stock firmware.
     #[error("the device does not run the Shelly Gen1 stock firmware; there is nothing to back up")]
     NotStock,
@@ -164,6 +171,11 @@ pub async fn collect_rpc(rpc: &RpcClient, info: &DeviceInfo) -> Result<Backup, B
         .unwrap_or_default();
     for script in scripts {
         let code = script_code(rpc, &script["id"]).await?;
+        // The answers are decoded leniently: a piece cut inside a character
+        // turns into U+FFFD and shifts every later offset.
+        if code.contains(char::REPLACEMENT_CHARACTER) {
+            return Err(BackupError::ScriptGarbled(script["id"].to_string()));
+        }
         let file = format!("script-{}.json", script["id"]);
         files.push((file, serde_json::json!({ "script": script, "code": code })));
     }

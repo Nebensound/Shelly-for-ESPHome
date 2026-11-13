@@ -27,6 +27,12 @@ pub enum RpcError {
          (--auth admin:password)"
     )]
     AuthFailed,
+    /// The device asks for a login this client cannot answer.
+    #[error(
+        "the device asks for a login this tool cannot answer (it speaks digest authentication \
+         with SHA-256 and qop=auth); please report your device"
+    )]
+    AuthUnsupported,
     /// An HTTP status other than success, without an RPC error.
     #[error("{method} answered with HTTP {status}")]
     Status {
@@ -164,7 +170,7 @@ impl RpcClient {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default();
             let header = authorization(challenge, credentials, "POST", "/rpc", &cnonce())
-                .ok_or(RpcError::AuthFailed)?;
+                .ok_or(RpcError::AuthUnsupported)?;
             response = self
                 .http
                 .post(&self.url)

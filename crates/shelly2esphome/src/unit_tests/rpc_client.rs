@@ -128,7 +128,10 @@ async fn calls_methods_with_and_without_a_login() {
     let other_user = RpcClient::new(&host, Some(credentials(&format!("root:{PASSWORD}"))));
     let refused = other_user.call("Sys.Ok", params.clone()).await.expect_err("user");
     assert!(refused.to_string().contains("use the user admin"));
-    assert!(matches!(admin.call("Basic.Ok", params).await, Err(RpcError::AuthFailed)));
+    // A challenge this client cannot answer is no refused login.
+    let unsupported = admin.call("Basic.Ok", params).await.expect_err("basic");
+    assert!(matches!(unsupported, RpcError::AuthUnsupported));
+    assert!(unsupported.to_string().contains("cannot answer"));
 }
 
 #[tokio::test]

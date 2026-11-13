@@ -15,7 +15,8 @@ fn explains_a_refused_update() {
     assert!(refused("Not committed").contains("run flash again in two minutes"));
     assert_eq!(
         refused("Low battery"),
-        "the device refused the update: Low battery. Nothing was changed."
+        "the device refused the update: Low battery. The firmware was not changed; the device log \
+         setting is put back."
     );
     assert!(matches!(refusal(RpcError::AuthFailed), FlashError::Rpc(RpcError::AuthFailed)));
 }

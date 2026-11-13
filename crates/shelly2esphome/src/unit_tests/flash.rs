@@ -129,6 +129,7 @@ async fn names_every_failure_for_device_reports() {
             }),
             "device-refused",
         ),
+        (FlashError::Rpc(RpcError::AuthUnsupported), "device-refused"),
         (FlashError::Log(LogError::Rpc(RpcError::AuthFailed)), "log-unavailable"),
         (FlashError::UpdateRefused("no".into()), "update-refused"),
         (FlashError::WrongSlotWritten(1), "wrong-slot"),
