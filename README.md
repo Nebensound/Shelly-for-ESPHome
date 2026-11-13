@@ -6,25 +6,27 @@ firmware with the ESPHome build you made for your device, Wi-Fi settings
 included.
 
 ```sh
-shelly2esphome list                                    # find your Shellys
-shelly2esphome flash 10.10.5.79 --firmware firmware.bin
+shelly2esphome list                                      # find your Shellys
+shelly2esphome flash 10.10.5.79 --firmware firmware.bin  # Gen2/Gen3: firmware.factory.bin
 ```
 
 - **Careful by design.** Before anything changes, the tool checks the model,
-  your firmware and the Wi-Fi signal, and saves the Shelly's settings. Until
-  your firmware has been verified on the device, every failure leaves the
-  Shelly reachable; running `flash` again picks up where it stopped.
+  your firmware and the Wi-Fi signal, and saves the Shelly's settings. On
+  Gen1, every failure until your firmware has been verified on the device
+  leaves the Shelly reachable, and running `flash` again picks up where it
+  stopped.
 - **Your firmware, your configuration.** No universal image: you build ESPHome
   for your device as usual, in the dashboard or on the command line.
-- **Shared experience.** After each run the tool offers a prefilled, anonymous
-  device report; the [table of reported devices](#reported-devices) grows
-  from them.
+- **Shared experience.** After a flash the tool offers a prefilled device
+  report without addresses, names or credentials; you submit it as a GitHub
+  issue, and the [table of reported devices](#reported-devices) grows from
+  them.
 
 | Devices | Status |
 |---|---|
-| **Gen1**: Shelly 1, 1PM, 1L, 2, 2.5, Plug S, Plug US, RGBW2 (colour mode), Dimmer 1, Dimmer 2, EM, Bulb, Vintage, Duo, Duo RGBW, i3, UNI | works; tested on a Shelly 1PM and a Dimmer 2 in the wall |
-| **Gen2/Gen3**: Plus, Pro and Gen3 models | supported by the tool, not yet confirmed on real hardware ([Gen2 and Gen3](#gen2-and-gen3)) |
-| Battery-powered devices (H&T), Plug 2 | not supported |
+| **Gen1**: Shelly 1, 1PM, 1L, 2, 2.5, Plug S, Plug US, RGBW2 (colour mode), Dimmer 1, Dimmer 2, EM, Bulb, Vintage, Duo, Duo RGBW, i3, UNI | works on a Shelly 1PM (−81 dBm) and a Dimmer 2 in the wall (−83 dBm), stock firmware 1.14.0, November 2026; the other models are built by CI, not yet tested on hardware |
+| **Gen2/Gen3**: Plus, Pro and Gen3 models with a known flash layout | supported by the tool, not yet confirmed on real hardware ([Gen2 and Gen3](#gen2-and-gen3)) |
+| Gen1 H&T (battery-powered), Plug 2 | not supported |
 
 **Get started:** [build your firmware](#1-build-your-esphome-firmware) →
 [get the tool](#2-get-the-tool) → [run it](#3-run-the-tool) →
@@ -64,9 +66,9 @@ The migration firmware is based on
 
 ## Supported devices
 
-The [table at the top](#shelly-for-esphome) lists the Gen1 models.
-Battery-powered devices (H&T) sleep most of the time and the Plug 2 has 4 MB
-of flash, so neither is supported.
+The [table at the top](#shelly-for-esphome) lists the Gen1 models. The Gen1
+H&T is battery-powered and sleeps most of the time, and the Plug 2 has 4 MB of
+flash, so neither is supported.
 
 ### Reported devices
 
