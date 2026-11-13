@@ -1,25 +1,42 @@
 # Shelly for ESPHome
 
-Flash **your own ESPHome firmware** onto Shelly devices over the air —
-no cable, no Tasmota in between. Gen1 devices are tested on real hardware;
-Gen2 and Gen3 are not confirmed yet (see [Gen2 and Gen3](#gen2-and-gen3)).
+**Put your own ESPHome firmware on a Shelly, over Wi-Fi.** No soldering, no
+opening the case, no detour through Tasmota: one command replaces the Shelly
+firmware with the ESPHome build you made for your device, Wi-Fi settings
+included.
 
-The `shelly2esphome` command line tool talks to a device running the Shelly
-stock firmware, installs a small intermediate firmware (the *migration
-firmware*), and lets it download, verify and install the ESPHome
-`firmware.bin` you built yourself, Wi-Fi settings included.
+```sh
+shelly2esphome list                                      # find your Shellys
+shelly2esphome flash 10.10.5.79 --firmware firmware.bin  # Gen2/Gen3: firmware.factory.bin
+```
 
-> **Status:** prototype. Tested end to end against a simulated device and on
-> real hardware (November 2026, stock firmware 1.14.0):
->
-> | Device | Signal | Result |
-> |---|---|---|
-> | Shelly 1PM (`SHSW-PM`) | −81 dBm | ESPHome running |
-> | Shelly Dimmer 2 (`SHDM-2`), in the wall | −83 dBm | ESPHome running, STM32 reflashed by ESPHome |
->
-> Other models are built by CI but not yet tested on hardware.
+- **Careful by design.** Before anything changes, the tool checks the model,
+  your firmware and the Wi-Fi signal, and saves the Shelly's settings. On
+  Gen1, every failure until your firmware has been verified on the device
+  leaves the Shelly reachable, and running `flash` again picks up where it
+  stopped.
+- **Your firmware, your configuration.** No universal image: you build ESPHome
+  for your device as usual, in the dashboard or on the command line.
+- **Shared experience.** After a flash the tool offers a prefilled device
+  report without addresses, names or credentials; you submit it as a GitHub
+  issue, and the [table of reported devices](#reported-devices) grows from
+  them.
+
+| Devices | Status |
+|---|---|
+| **Gen1**: Shelly 1, 1PM, 1L, 2, 2.5, Plug S, Plug US, RGBW2 (colour mode), Dimmer 1, Dimmer 2, EM, Bulb, Vintage, Duo, Duo RGBW, i3, UNI | works on a Shelly 1PM (−81 dBm) and a Dimmer 2 in the wall (−83 dBm), stock firmware 1.14.0, November 2026; the other models are built by CI, not yet tested on hardware |
+| **Gen2/Gen3**: Plus, Pro and Gen3 models with a known flash layout | supported by the tool, not yet confirmed on real hardware ([Gen2 and Gen3](#gen2-and-gen3)) |
+| Gen1 H&T (battery-powered), Plug 2 | not supported |
+
+**Get started:** [build your firmware](#1-build-your-esphome-firmware) →
+[get the tool](#2-get-the-tool) → [run it](#3-run-the-tool) →
+[report your device](#4-report-your-device)
 
 ## How it works
+
+On a Gen1 device, `shelly2esphome` talks to the Shelly stock firmware,
+installs a small intermediate firmware (the *migration firmware*) and lets it
+download, verify and install the ESPHome `firmware.bin` you built yourself.
 
 ```text
  your computer (shelly2esphome)                 Shelly Gen1
@@ -49,10 +66,9 @@ The migration firmware is based on
 
 ## Supported devices
 
-Shelly 1, 1PM, 1L, 2, 2.5, Plug S, Plug US, RGBW2 (colour mode), Dimmer 1,
-Dimmer 2, EM, Bulb, Vintage, Duo, Duo RGBW, i3 and UNI.
-
-Battery-powered devices (H&T) and the Plug 2 (4 MB flash) are not supported.
+The [table at the top](#shelly-for-esphome) lists the Gen1 models. The Gen1
+H&T is battery-powered and sleeps most of the time, and the Plug 2 has 4 MB of
+flash, so neither is supported.
 
 ### Reported devices
 
