@@ -1,6 +1,6 @@
 [package]
 name = "shelly2esphome"
-version = "0.10.1"
+version = "0.11.0"
 description = "Flash a self-built ESPHome firmware onto Shelly devices over the air"
 # The CLI is MIT; the embedded migration firmware packages are GPL-3.0 (NOTICE).
 license = "MIT AND GPL-3.0-only"
