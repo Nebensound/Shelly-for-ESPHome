@@ -4,6 +4,7 @@
 //! does not exist, for `MG2X.Status`). Only reading requests are sent.
 
 use std::{
+    collections::BTreeMap,
     net::{IpAddr, Ipv4Addr},
     str::FromStr,
     time::Duration,
@@ -257,7 +258,8 @@ pub async fn scan(networks: &[Network], options: &ScanOptions) -> Vec<(IpAddr, F
         networks.iter().flat_map(|network| network.hosts()).collect();
     addresses.sort();
     addresses.dedup();
-    let mut found: Vec<(IpAddr, Found)> = stream::iter(addresses)
+    // A map keeps the answers sorted by address (each address is asked once).
+    let found: BTreeMap<IpAddr, Found> = stream::iter(addresses)
         .map(|ip| {
             let http = &http;
             async move { probe(http, ip, options.port).await.map(|found| (IpAddr::V4(ip), found)) }
@@ -266,8 +268,7 @@ pub async fn scan(networks: &[Network], options: &ScanOptions) -> Vec<(IpAddr, F
         .filter_map(|result| async move { result })
         .collect()
         .await;
-    found.sort_by_key(|(ip, _)| *ip);
-    found
+    found.into_iter().collect()
 }
 
 #[cfg(test)]
