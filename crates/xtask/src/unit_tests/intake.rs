@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use shelly2esphome::report::PackageSource;
+use shelly2esphome::report::{PackageSource, ReportedModel};
 
 use super::*;
 
@@ -11,7 +11,7 @@ pub fn report() -> Report {
     Report {
         result: SUCCESS.into(),
         facts: DeviceFacts {
-            model: Some(Model::Shelly25),
+            model: Some(ReportedModel::Gen1(Model::Shelly25)),
             stock_firmware: Some("20230913-114008/v1.14.0-gcb84623".into()),
             rssi_dbm: Some(-67),
             login: Some(true),
@@ -150,7 +150,7 @@ fn refuses_values_the_tool_does_not_write() {
     for (id, value) in [
         ("result", "device-failed:hash_mismatch"),
         ("model", "SHSW-99"),
-        ("generation", "Gen2"),
+        ("generation", "Gen5"),
         ("stock-firmware", "my-kitchen-light/v1.14.0"),
         ("signal", "-67"),
         ("signal", "strong dBm"),
@@ -175,6 +175,38 @@ fn refuses_values_the_tool_does_not_write() {
             "{id}={value}"
         );
     }
+}
+
+#[test]
+fn takes_gen3_reports_by_their_app() {
+    let mut fields = coded_with("", "");
+    fields.pop();
+    for (id, value) in [
+        ("model", "S1G3"),
+        ("generation", "Gen3"),
+        ("stock-firmware", "20261109-150519/2.2.0-g7968dca"),
+        ("package", "official"),
+    ] {
+        fields
+            .iter_mut()
+            .filter(|field| field.0 == id)
+            .for_each(|field| field.1 = value.to_owned());
+    }
+    let code = Report::code(&fields);
+    fields.push((CODE_ID, code));
+    assert_eq!(submission(&fields).problems(), Vec::<String>::new());
+
+    // A Gen1 device type with a later generation, and the other way round.
+    let mismatch = "The fields `model` and `generation` do not match.";
+    assert_eq!(submission(&coded_with("generation", "Gen3")).problems(), [mismatch]);
+    let mut gen1 = fields.clone();
+    gen1.pop();
+    gen1.iter_mut()
+        .filter(|field| field.0 == "generation")
+        .for_each(|field| field.1 = "Gen1".into());
+    let code = Report::code(&gen1);
+    gen1.push((CODE_ID, code));
+    assert_eq!(submission(&gen1).problems(), [mismatch]);
 }
 
 #[test]

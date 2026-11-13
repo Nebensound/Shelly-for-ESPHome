@@ -18,12 +18,8 @@ fn timestamps_are_utc() {
 
 fn sample(device_type: &str, mac: &str) -> Backup {
     Backup {
-        info: StockInfo {
-            device_type: device_type.into(),
-            mac: mac.into(),
-            auth: false,
-            fw: "1.14.0".into(),
-        },
+        device: device_type.into(),
+        mac: mac.into(),
         files: vec![
             ("shelly.json".into(), serde_json::json!({"type": "SHSW-PM"})),
             ("settings.json".into(), serde_json::json!({"relays": [{}], "wifi_ap": {"key": "x"}})),

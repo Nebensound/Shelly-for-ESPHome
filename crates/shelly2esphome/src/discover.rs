@@ -178,7 +178,9 @@ impl Found {
                     format!("busy ({:?})", status.state)
                 }
             },
-            Self::Newer { generation, .. } => format!("Gen{generation}: not supported yet"),
+            Self::Newer { generation, .. } => {
+                format!("Gen{generation}: flashed with a factory image, see probe")
+            }
         }
     }
 }

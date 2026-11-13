@@ -49,6 +49,13 @@ async fn names_every_failure_for_device_reports() {
         .send()
         .await
         .expect_err("no url");
+    let rpc_http = crate::http::builder()
+        .build()
+        .expect("client")
+        .get("no url")
+        .send()
+        .await
+        .expect_err("no url");
     let model: ModelId = serde_json::from_str("\"S3SW-001X16EU\"").expect("model");
     let generation = Generation::try_from(3).expect("generation");
     let refusals = [
@@ -67,6 +74,14 @@ async fn names_every_failure_for_device_reports() {
         FlashError::Aborted,
         FlashError::Busy(MigrationState::Downloading),
         FlashError::ImageTooLarge { size: 2, max_size: 1 },
+        FlashError::Rpc(RpcError::AuthRequired),
+        FlashError::Rpc(RpcError::AuthFailed),
+        FlashError::Backup(BackupError::Rpc(RpcError::AuthRequired)),
+        FlashError::Backup(BackupError::Rpc(RpcError::AuthFailed)),
+        FlashError::PackageMismatch { device: "S1G3".into(), package: "S1PMG3".into() },
+        FlashError::VersionMismatch { device: "2.1.1".into(), package: "2.2.0".into() },
+        FlashError::Build(BuildError::NoOtadata),
+        FlashError::TargetSlot(1),
     ];
     for refusal in refusals {
         assert_eq!(refusal.report_kind(), None, "{refusal}");
@@ -100,6 +115,31 @@ async fn names_every_failure_for_device_reports() {
         (FlashError::InstallFatal, "install-fatal"),
         (FlashError::FlashTimeout, "flash-timeout"),
         (FlashError::EsphomeNotSeen("10.0.0.2:6053".parse().expect("addr")), "esphome-not-seen"),
+        (FlashError::Rpc(RpcError::Http(rpc_http)), "device-unreachable"),
+        (
+            FlashError::Rpc(RpcError::Status { method: "X".into(), status: 500 }),
+            "device-http-status",
+        ),
+        (FlashError::Rpc(RpcError::Unreadable("X".into())), "device-http-status"),
+        (
+            FlashError::Rpc(RpcError::Refused {
+                method: "X".into(),
+                code: -1,
+                message: "no".into(),
+            }),
+            "device-refused",
+        ),
+        (FlashError::Rpc(RpcError::AuthUnsupported), "device-refused"),
+        (FlashError::Log(LogError::Rpc(RpcError::AuthFailed)), "log-unavailable"),
+        (FlashError::UpdateRefused("no".into()), "update-refused"),
+        (FlashError::WrongSlotWritten(1), "wrong-slot"),
+        (
+            FlashError::BootloaderKept {
+                installed: "1.0.3".parse().expect("version"),
+                minimum: "1.0.3".parse().expect("version"),
+            },
+            "bootloader-kept",
+        ),
     ];
     for (failure, kind) in &failures {
         assert_eq!(failure.report_kind().as_deref(), Some(*kind), "{failure}");

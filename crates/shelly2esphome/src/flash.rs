@@ -16,12 +16,16 @@ use crate::{
     backup::{self, BackupError},
     device::{DeviceClient, DeviceError, Firmware, MigrationState, MigrationStatus},
     embedded::Packages,
+    esphome_package::BuildError,
     image::FirmwareImage,
     migration::{MigrationPackage, PackageError},
     model::Model,
-    report::{DeviceFacts, PackageSource},
+    profile::BootloaderVersion,
+    report::{DeviceFacts, PackageSource, ReportedModel},
     rpc::{Generation, ModelId},
+    rpc_client::RpcError,
     server::{FileServer, IMAGE_PATH, PACKAGE_PATH},
+    udp_log::LogError,
 };
 
 /// Unanswered status requests after which a device that received the whole
@@ -41,6 +45,15 @@ pub struct Timeouts {
     pub esphome_boot: Duration,
     /// Pause between status requests.
     pub poll_interval: Duration,
+    /// Gen2+: until the device log names the slot the installer will write to.
+    pub slot_probe: Duration,
+    /// Gen2+: how long the stock firmware has to run before it accepts an
+    /// update ("Not committed" before that).
+    pub settle: Duration,
+    /// Gen2+: until the device has downloaded the ESPHome package.
+    pub package_download: Duration,
+    /// Gen2+: until the installer reports success after the download.
+    pub update_result: Duration,
 }
 
 impl Default for Timeouts {
@@ -51,6 +64,11 @@ impl Default for Timeouts {
             flash: Duration::from_secs(300),
             esphome_boot: Duration::from_secs(180),
             poll_interval: Duration::from_secs(1),
+            // What Free-Shelly OTA found to be enough on real devices.
+            slot_probe: Duration::from_secs(8),
+            settle: Duration::from_secs(120),
+            package_download: Duration::from_secs(600),
+            update_result: Duration::from_secs(30),
         }
     }
 }
@@ -70,6 +88,8 @@ pub struct FlashOptions {
     pub esphome_port: u16,
     /// HTTP port of the migration firmware (fixed to 80 in `mos.yml`).
     pub migration_port: u16,
+    /// Gen2+: UDP port on this computer for the device log.
+    pub log_port: u16,
     /// Phase time limits.
     pub timeouts: Timeouts,
     /// Migration packages used when no package is given explicitly.
@@ -88,6 +108,7 @@ impl Default for FlashOptions {
             serve_port: 0,
             esphome_port: 6053,
             migration_port: 80,
+            log_port: 9514,
             timeouts: Timeouts::default(),
             embedded_packages: Packages::BUILT_IN,
             backup_dir: Some(PathBuf::from(".")),
@@ -121,6 +142,71 @@ pub enum FlashError {
     /// Communication with the device failed.
     #[error(transparent)]
     Device(#[from] DeviceError),
+    /// Gen2+: an RPC call failed.
+    #[error(transparent)]
+    Rpc(#[from] RpcError),
+    /// Gen2+: the device log could not be switched on.
+    #[error(transparent)]
+    Log(#[from] LogError),
+    /// Gen2+: the official package is for another app.
+    #[error(
+        "the official package is for {package}, the device runs {device}. Nothing was changed."
+    )]
+    PackageMismatch {
+        /// App of the device.
+        device: String,
+        /// App of the package.
+        package: String,
+    },
+    /// Gen2+: the device runs another firmware version than the official
+    /// package. Its flash layout may differ, and moving it during the
+    /// migration is not reliable.
+    #[error(
+        "the device runs firmware {device}, the ESPHome package is built on the official \
+         {package}. Update the device to {package} first (Shelly app or web UI) and run flash \
+         again; build ESPHome with the partition table of {package}. Nothing was changed."
+    )]
+    VersionMismatch {
+        /// Firmware version of the device.
+        device: String,
+        /// Firmware version of the package.
+        package: String,
+    },
+    /// Gen2+: no ESPHome package can be built.
+    #[error("{0}. Nothing was changed.")]
+    Build(#[from] BuildError),
+    /// Gen2+: the installer would write to a slot ESPHome's bootloader does
+    /// not start.
+    #[error(
+        "the stock installer would write to slot {0}, but ESPHome's bootloader starts app_0, so \
+         the stock firmware would start again. Run one official update first (Shelly app or web \
+         UI): it moves the stock firmware to the other slot. Then run flash again. Only the \
+         device log setting was changed, and it is restored."
+    )]
+    TargetSlot(u8),
+    /// Gen2+: the device refused `Shelly.Update`.
+    #[error("the device refused the update: {0}")]
+    UpdateRefused(String),
+    /// Gen2+: the installer wrote ESPHome to a slot its bootloader does not
+    /// start.
+    #[error(
+        "the stock installer wrote ESPHome to slot {0}, so the stock firmware starts again. Run \
+         one official update (Shelly app or web UI) and flash again."
+    )]
+    WrongSlotWritten(u8),
+    /// Gen2+: the installer kept Shelly's bootloader.
+    #[error(
+        "the stock installer kept Shelly's bootloader (installed {installed}, package minimum \
+         {minimum}). ESPHome starts, but after three starts Shelly's bootloader goes back to the \
+         stock firmware. Only a cable fixes that: write ESPHome's bootloader and an erased \
+         otadata (the firmware.factory.bin of your build at 0x0 contains both)."
+    )]
+    BootloaderKept {
+        /// The bootloader the installer considered installed.
+        installed: BootloaderVersion,
+        /// The package's `min_version`.
+        minimum: BootloaderVersion,
+    },
     /// The migration package is unusable.
     #[error(transparent)]
     Package(#[from] PackageError),
@@ -166,7 +252,7 @@ pub enum FlashError {
     Aborted,
     /// The stock firmware did not download the package.
     #[error(
-        "the device did not fetch the migration package. Can it reach this computer ({0})? \
+        "the device did not fetch the package. Can it reach this computer ({0})? \
          Check firewall/VLAN or set --serve-ip. Nothing was changed."
     )]
     PackageNotFetched(String),
@@ -276,9 +362,14 @@ fn error_token(error: &str) -> &str {
 
 /// The kinds [`FlashError::report_kind`] names besides
 /// `device-failed:<reason>`.
-pub const REPORT_KINDS: [&str; 15] = [
+pub const REPORT_KINDS: [&str; 20] = [
     "device-unreachable",
     "device-http-status",
+    "device-refused",
+    "log-unavailable",
+    "update-refused",
+    "wrong-slot",
+    "bootloader-kept",
     "migration-rejected",
     "unknown-firmware",
     "protocol-mismatch",
@@ -315,6 +406,12 @@ impl FlashError {
         let kind = match self {
             Self::Device(DeviceError::AuthRequired)
             | Self::Backup(BackupError::Device(DeviceError::AuthRequired))
+            | Self::Rpc(RpcError::AuthRequired | RpcError::AuthFailed)
+            | Self::Backup(BackupError::Rpc(RpcError::AuthRequired | RpcError::AuthFailed))
+            | Self::PackageMismatch { .. }
+            | Self::VersionMismatch { .. }
+            | Self::Build(_)
+            | Self::TargetSlot(_)
             | Self::Package(PackageError::WrongModel { .. })
             | Self::UnsupportedModel(_)
             | Self::UnsupportedGeneration { .. }
@@ -323,7 +420,15 @@ impl FlashError {
             | Self::Aborted
             | Self::Busy(_)
             | Self::ImageTooLarge { .. } => return None,
-            Self::Device(DeviceError::Http(_)) => "device-unreachable",
+            Self::Device(DeviceError::Http(_)) | Self::Rpc(RpcError::Http(_)) => {
+                "device-unreachable"
+            }
+            Self::Rpc(RpcError::Status { .. } | RpcError::Unreadable(_)) => "device-http-status",
+            Self::Rpc(RpcError::Refused { .. } | RpcError::AuthUnsupported) => "device-refused",
+            Self::Log(_) => "log-unavailable",
+            Self::UpdateRefused(_) => "update-refused",
+            Self::WrongSlotWritten(_) => "wrong-slot",
+            Self::BootloaderKept { .. } => "bootloader-kept",
             Self::Device(DeviceError::Status { .. }) => "device-http-status",
             Self::Device(DeviceError::Rejected(_)) => "migration-rejected",
             Self::Device(DeviceError::UnknownFirmware) => "unknown-firmware",
@@ -493,7 +598,10 @@ async fn monitor_flash(
     }
 }
 
-async fn wait_for_esphome(address: SocketAddr, timeouts: &Timeouts) -> Result<(), FlashError> {
+pub(crate) async fn wait_for_esphome(
+    address: SocketAddr,
+    timeouts: &Timeouts,
+) -> Result<(), FlashError> {
     let deadline = Instant::now() + timeouts.esphome_boot;
     loop {
         let attempt =
@@ -534,7 +642,7 @@ pub async fn run(
             let model = Model::from_device_type(&info.device_type)
                 .ok_or_else(|| FlashError::UnsupportedModel(info.device_type.clone()))?;
             let mut facts = DeviceFacts {
-                model: Some(model),
+                model: Some(ReportedModel::Gen1(model)),
                 stock_firmware: Some(info.fw.clone()),
                 rssi_dbm: Some(rssi_dbm),
                 login: Some(info.auth),

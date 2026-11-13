@@ -29,7 +29,8 @@ These rules apply to every change, by people and by coding agents.
 
 ## Purpose
 
-Flash a **user-built** ESPHome firmware onto Shelly Gen1 devices over the air.
+Flash a **user-built** ESPHome firmware onto Shelly devices over the air: Gen1
+through the migration firmware, Gen2 and Gen3 through their stock updater.
 The universal, CI-built ESPHome firmwares and the web installer that used to
 live here were removed on purpose; do not reintroduce them.
 
@@ -80,8 +81,18 @@ live here were removed on purpose; do not reintroduce them.
     the user's Wi-Fi credentials and exists only in memory; the result must
     pass `StockPackage::parse` before it is returned.
   - `rpc.rs` holds what Gen2+ devices report about themselves (generation,
-    model ID, app name, firmware version, Wi-Fi). Gen2+ devices are only read
-    so far; `flash` refuses them before any change.
+    model ID, app name, firmware version, Wi-Fi). `rpc_client.rs` calls
+    their JSON-RPC (`POST /rpc`) with the digest authentication (SHA-256)
+    the stock firmware asks for; the user is always `admin`.
+  - `udp_log.rs` points a Gen2+ device's debug log at this computer
+    (`Sys.SetConfig debug.udp.addr`) and reads the installer's lines: the
+    target slot (`Storing core dumps to app_N`), `Will write to slot N`, the
+    bootloader decision (`Boot: … update? 0/1`) and `Update succeeded`. The
+    previous setting is put back.
+  - `flash_esp32.rs` is `flash` for Gen2 and later: refusals, confirmation,
+    backup (`backup::collect_rpc`), the slot check over the log, then the
+    ESPHome package through `Shelly.Update` and the installer's log. The CLI
+    identifies the device first and picks it or `flash.rs`.
   - `report.rs` builds the device report link `flash` prints: a prefilled
     issue form (`.github/ISSUE_TEMPLATE/device-report.yml` after a success,
     `device-failure.yml` after a failure). `flash` hands what it learned to
@@ -139,7 +150,11 @@ live here were removed on purpose; do not reintroduce them.
    firmware keeps running and accepts a new `MG2X.Flash`.
 3. The CLI performs every refusal (model, package, signal, login, confirmation)
    and the backup of the stock settings **before** the first request that
-   changes the device.
+   changes the device. Gen2 and later: the only change before the update is
+   the destination of the device log, which the slot check needs; it is put
+   back before any refusal. The device must already run the firmware
+   version of the official package, so no flash layout moves during the
+   migration.
 4. `MG2X_PROTOCOL_VERSION` and the marker `shelly2esphome-mg2x-protocol=N` in
    `main.c` and `MIGRATION_PROTOCOL` in `protocol.rs` change together, and
    with them the crate version (builds download the release packages of

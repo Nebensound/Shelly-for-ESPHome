@@ -23,16 +23,17 @@ use crate::{
     esphome_package::EsphomePackage,
     fetch::{self, FetchOptions, Source},
     flash::{self, FlashOptions, Reporter, local_ip_towards},
+    flash_esp32::{self, Esp32Flash},
     image::FirmwareImage,
     migration::MigrationPackage,
     model::Model,
-    profile::BOOT_MIN_VERSION,
-    report::{self, DeviceFacts, Report},
+    profile::{BOOT_MIN_VERSION, Profile},
+    report::{self, DeviceFacts, PackageSource, Report},
     rpc::{AppName, WifiSignal},
     stock_package::StockPackage,
 };
 
-/// Flash a self-built ESPHome firmware onto Shelly Gen1 devices over the air.
+/// Flash a self-built ESPHome firmware onto Shelly devices over the air.
 #[derive(Debug, Parser)]
 #[command(name = "shelly2esphome", version, about)]
 struct Cli {
@@ -86,13 +87,21 @@ enum Command {
     Flash {
         /// IP address or host name of the device (optionally with :port).
         host: String,
-        /// ESPHome `firmware.bin` built for this device, Wi-Fi settings included.
+        /// ESPHome firmware built for this device, Wi-Fi settings included:
+        /// `firmware.bin` for Gen1, `firmware.factory.bin` for Gen2/Gen3.
         #[arg(long, short)]
         firmware: PathBuf,
-        /// Migration package `mg2esphome-<Model>.zip`; only needed if this build
-        /// does not contain the package of the model (see `probe`).
-        #[arg(long, short)]
+        /// Gen1: migration package `mg2esphome-<Model>.zip`; only needed if this
+        /// build does not contain the package of the model (see `probe`).
+        #[arg(long, short, conflicts_with = "package")]
         migration: Option<PathBuf>,
+        /// Gen2/Gen3: official update package of the device; downloaded from
+        /// Shelly or taken from the cache otherwise.
+        #[arg(long)]
+        package: Option<PathBuf>,
+        /// Gen2/Gen3: UDP port on this computer for the device log.
+        #[arg(long, default_value_t = 9514)]
+        log_port: u16,
         /// Login if the web authentication of the stock firmware is enabled.
         #[arg(long, value_name = "USER:PASSWORD")]
         auth: Option<Credentials>,
@@ -165,6 +174,18 @@ struct Console<'t, 'a> {
     progress_open: bool,
     /// What `flash` learned about the device, for the device report.
     facts: DeviceFacts,
+}
+
+impl<'t, 'a> Console<'t, 'a> {
+    fn new(terminal: &'t mut Terminal<'a>, assume_yes: bool) -> Self {
+        Self {
+            terminal,
+            assume_yes,
+            last_percent: None,
+            progress_open: false,
+            facts: DeviceFacts::default(),
+        }
+    }
 }
 
 impl Reporter for Console<'_, '_> {
@@ -324,7 +345,23 @@ async fn probe(
                     "Beta firmware: its flash layout can differ from the stable release."
                 );
             }
-            let _ = writeln!(out, "Not supported yet: only Gen1 devices can be flashed so far.");
+            let _ = if Profile::by_app(info.app.as_str()).is_some() {
+                writeln!(
+                    out,
+                    "Can be flashed with the firmware.factory.bin of an ESPHome build (not yet \
+                     confirmed on real hardware); check it first with check --app {}.",
+                    info.app
+                )
+            } else {
+                writeln!(
+                    out,
+                    "Not supported: this tool does not know the flash layout of {}.",
+                    info.app
+                )
+            };
+            if info.auth {
+                let _ = writeln!(out, "Login enabled: pass --auth admin:password.");
+            }
         }
         Firmware::Migration(status) => {
             let _ = writeln!(
@@ -353,8 +390,8 @@ async fn backup_command(
         terminal.out,
         "Saved {} files of {} ({}) to {}",
         saved.files.len(),
-        saved.info.device_type,
-        saved.info.mac,
+        saved.device,
+        saved.mac,
         directory.display()
     );
     Ok(())
@@ -423,7 +460,7 @@ fn check_factory(
         terminal.out,
         "ESPHome package for {}: {} bytes with ESPHome's bootloader (min_version {} instead \
          of {}) and an erased otadata. It holds the Wi-Fi credentials of the firmware and is \
-         built in memory only.\nGen2/Gen3 devices cannot be flashed yet.",
+         built in memory only.",
         package.profile().app(),
         package.bytes().len(),
         BOOT_MIN_VERSION,
@@ -471,6 +508,8 @@ async fn execute(
             host,
             firmware,
             migration,
+            package,
+            log_port,
             auth,
             min_rssi,
             allow_weak_signal,
@@ -480,34 +519,56 @@ async fn execute(
             no_backup,
             yes,
         } => {
-            let image = read_image(&firmware)?;
-            let package = match migration {
-                Some(path) => {
-                    let bytes = std::fs::read(&path)
-                        .with_context(|| format!("cannot read {}", path.display()))?;
-                    Some(MigrationPackage::parse(bytes)?)
-                }
-                None => None,
-            };
-            let client = DeviceClient::new(&host, auth);
             let options = FlashOptions {
                 min_rssi_dbm: min_rssi,
                 allow_weak_signal,
                 serve_ip: serve_ip.or(settings.flash.serve_ip),
                 serve_port: port,
+                log_port,
                 backup_dir: (!no_backup).then_some(backup_dir),
                 ..settings.flash.clone()
             };
-            let mut console = Console {
-                terminal,
-                assume_yes: yes,
-                last_percent: None,
-                progress_open: false,
-                facts: DeviceFacts::default(),
-            };
+            let client = DeviceClient::new(&host, auth.clone());
             let started = std::time::Instant::now();
-            let result =
-                flash::run(&host, &client, &image, package.as_ref(), &options, &mut console).await;
+            // Gen2 and later need the official package and the factory
+            // image; everything else, errors included, is the Gen1 run.
+            let (result, mut console) = if let Ok(Firmware::Newer { info, .. }) =
+                client.identify().await
+            {
+                if migration.is_some() {
+                    anyhow::bail!(
+                        "--migration is for Gen1 devices; {} is a {}",
+                        info.model,
+                        info.generation
+                    );
+                }
+                let factory = read_file(&firmware)?;
+                let (stock, source) = match package {
+                    Some(path) => (package_file(&path)?, PackageSource::File),
+                    None => {
+                        (package_of(&info.app, settings, terminal).await?, PackageSource::Official)
+                    }
+                };
+                let mut console = Console::new(terminal, yes);
+                let flash =
+                    Esp32Flash { info: &info, credentials: auth, factory, stock: &stock, source };
+                (flash_esp32::run(&host, flash, &options, &mut console).await, console)
+            } else {
+                if package.is_some() {
+                    anyhow::bail!("--package is for Gen2 and later devices");
+                }
+                let image = read_image(&firmware)?;
+                let package = match migration {
+                    Some(path) => Some(MigrationPackage::parse(read_file(&path)?)?),
+                    None => None,
+                };
+                let mut console = Console::new(terminal, yes);
+                (
+                    flash::run(&host, &client, &image, package.as_ref(), &options, &mut console)
+                        .await,
+                    console,
+                )
+            };
             let report = |result: String, facts: DeviceFacts| {
                 Report { result, facts, duration: started.elapsed() }.url()
             };
@@ -533,7 +594,7 @@ async fn execute(
                 }
                 // Only for a device identified as supported: a wrong address
                 // or a refusal is nothing to report.
-                Err(error) => match (error.report_kind(), console.facts.model) {
+                Err(error) => match (error.report_kind(), &console.facts.model) {
                     (Some(kind), Some(_)) => Err(anyhow::anyhow!(
                         "{:#}\n\nPlease report this failure; it helps to fix it. The link opens a \
                          prefilled GitHub issue with no addresses or names; nothing is sent until \

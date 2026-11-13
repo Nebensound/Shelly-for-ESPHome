@@ -17,7 +17,10 @@ use std::{fmt::Write as _, time::Duration};
 
 use sha2::{Digest, Sha256};
 
-use crate::model::Model;
+use crate::{
+    model::Model,
+    rpc::{AppName, Generation},
+};
 
 /// Where the issue forms live.
 pub const REPOSITORY: &str = "https://github.com/Nebensound/Shelly-for-ESPHome";
@@ -27,13 +30,51 @@ pub const SUCCESS: &str = "success";
 /// this); it only shows that the fields were not edited by hand.
 const CODE_SALT: &str = "shelly2esphome device report v1";
 
-/// Where the migration package came from.
+/// Where the migration package (Gen1) or the official package (Gen2 and
+/// later) came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageSource {
     /// Built into this program.
     Embedded,
-    /// Given with `--migration`.
+    /// Given with `--migration` or `--package`.
     File,
+    /// Downloaded from Shelly's update service or taken from its cache.
+    Official,
+}
+
+/// The model a report is about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReportedModel {
+    /// A Gen1 device, by its device type.
+    Gen1(Model),
+    /// A Gen2 or later device, by the app name of its stock firmware, which
+    /// names the product (model IDs differ between regions).
+    Newer {
+        /// App name, e.g. `S1G3`.
+        app: AppName,
+        /// Generation.
+        generation: Generation,
+    },
+}
+
+impl ReportedModel {
+    /// The value of the `model` field.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Gen1(model) => model.device_type(),
+            Self::Newer { app, .. } => app.as_str(),
+        }
+    }
+
+    /// The value of the `generation` field.
+    #[must_use]
+    pub fn generation(&self) -> String {
+        match self {
+            Self::Gen1(_) => "Gen1".to_owned(),
+            Self::Newer { generation, .. } => generation.to_string(),
+        }
+    }
 }
 
 /// What a `flash` run learned about the device, as far as it got. Nothing
@@ -41,8 +82,9 @@ pub enum PackageSource {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DeviceFacts {
     /// The supported model, once the stock firmware named it.
-    pub model: Option<Model>,
-    /// Stock firmware build, e.g. `20230913-114008/v1.14.0-gcb84623`.
+    pub model: Option<ReportedModel>,
+    /// Stock firmware build, e.g. `20230913-114008/v1.14.0-gcb84623` (Gen1)
+    /// or `20261109-150519/2.2.0-g7968dca` (Gen2 and later).
     pub stock_firmware: Option<String>,
     /// Wi-Fi signal in dBm.
     pub rssi_dbm: Option<i32>,
@@ -76,9 +118,10 @@ fn is_hex(text: &str, lengths: std::ops::RangeInclusive<usize>) -> bool {
         && text.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// The version of a stock build: `v<major>.<minor>.<patch>`, optionally
-/// `-rc<n>` or `-beta<n>`, then optionally the commit as `-g<7–12 hex>` or
-/// `@<8 hex>`, e.g. `v1.14.0-gcb84623` or `v1.9.4@e2732e05`.
+/// The version of a stock build: `<major>.<minor>.<patch>` (with a `v` on
+/// Gen1), optionally `-rc<n>` or `-beta<n>`, then optionally the commit as
+/// `-g<7–12 hex>` or `@<8 hex>`, e.g. `v1.14.0-gcb84623`, `v1.9.4@e2732e05`
+/// or `2.2.0-beta2-gb8c68b1`.
 fn is_stock_version(version: &str) -> bool {
     let (release, commit) = if let Some((release, hash)) = version.split_once('@') {
         (release, is_hex(hash, 8..=8))
@@ -89,7 +132,7 @@ fn is_stock_version(version: &str) -> bool {
     } else {
         (version, true)
     };
-    let mut parts = release.strip_prefix('v').unwrap_or_default().splitn(2, '-');
+    let mut parts = release.strip_prefix('v').unwrap_or(release).splitn(2, '-');
     let numbers = parts.next().unwrap_or_default();
     let pre_release = parts.next();
     commit
@@ -100,7 +143,7 @@ fn is_stock_version(version: &str) -> bool {
         })
 }
 
-/// Whether `text` is a Gen1 stock firmware build, `YYYYMMDD-HHMMSS/<version>`
+/// Whether `text` is a stock firmware build, `YYYYMMDD-HHMMSS/<version>`
 /// (see [`is_stock_version`]). The device reports it, so anything else could
 /// be free text (a name, an address) and is not put into a report. The
 /// report workflow applies the same rule to submitted reports.
@@ -140,11 +183,15 @@ impl Report {
         let package = facts.package.map_or("unknown", |package| match package {
             PackageSource::Embedded => "embedded",
             PackageSource::File => "file",
+            PackageSource::Official => "official",
         });
         vec![
             ("result", self.result.clone()),
-            ("model", facts.model.map_or("unknown", Model::device_type).to_owned()),
-            ("generation", "Gen1".to_owned()),
+            ("model", facts.model.as_ref().map_or("unknown", ReportedModel::name).to_owned()),
+            (
+                "generation",
+                facts.model.as_ref().map_or("unknown".to_owned(), ReportedModel::generation),
+            ),
             (
                 "stock-firmware",
                 facts
@@ -180,7 +227,7 @@ impl Report {
     #[must_use]
     pub fn url(&self) -> String {
         let fields = self.fields();
-        let model = self.facts.model.map_or("unknown device", Model::device_type);
+        let model = self.facts.model.as_ref().map_or("unknown device", ReportedModel::name);
         let (template, title) = if self.result == SUCCESS {
             ("device-report.yml", format!("Device report: {model} works"))
         } else {

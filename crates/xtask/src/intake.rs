@@ -22,8 +22,12 @@ use serde_json::Value;
 use shelly2esphome::{
     flash,
     model::Model,
+    profile::Profile,
     report::{self, DeviceFacts, Report, SUCCESS},
 };
+
+/// The generations a report names.
+const GENERATIONS: [&str; 3] = ["Gen1", "Gen2", "Gen3"];
 
 /// The issue form of successful runs; its labels name the fields in an
 /// issue body.
@@ -189,13 +193,15 @@ impl Submission {
         }
         let checks: [(&str, Check); 11] = [
             ("result", result),
-            ("model", |value| Model::from_device_type(value).is_some()),
-            ("generation", |value| value == "Gen1"),
+            ("model", |value| {
+                Model::from_device_type(value).is_some() || Profile::by_app(value).is_some()
+            }),
+            ("generation", |value| GENERATIONS.contains(&value)),
             ("stock-firmware", |value| value == "unknown" || report::is_stock_build(value)),
             ("signal", |value| value == "unknown" || dbm(value).is_some()),
             ("login", is_yes_no),
             ("backup", is_yes_no),
-            ("package", |value| ["embedded", "file", "unknown"].contains(&value)),
+            ("package", |value| ["embedded", "file", "official", "unknown"].contains(&value)),
             ("tool", is_version),
             ("platform", is_platform),
             ("duration", |value| seconds(value).is_some()),
@@ -204,6 +210,13 @@ impl Submission {
             if !check(self.get(id)) {
                 problems.push(format!("The field `{id}` holds a value the tool does not write."));
             }
+        }
+        // A Gen1 device type goes with Gen1, an app name with a later one.
+        let gen1 = Model::from_device_type(self.get("model")).is_some();
+        let later = Profile::by_app(self.get("model")).is_some();
+        let generation = self.get("generation");
+        if (gen1 || later) && GENERATIONS.contains(&generation) && gen1 != (generation == "Gen1") {
+            problems.push("The fields `model` and `generation` do not match.".to_owned());
         }
         problems
     }

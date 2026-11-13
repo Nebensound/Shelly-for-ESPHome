@@ -34,6 +34,19 @@ impl std::str::FromStr for BootloaderVersion {
     }
 }
 
+impl BootloaderVersion {
+    /// The version in the update log's form, `010003ff` for 1.0.3: major,
+    /// minor and patch as hex bytes, then a byte that is not part of it.
+    #[must_use]
+    pub fn from_log_word(word: &str) -> Option<Self> {
+        let value = Some(word)
+            .filter(|word| word.len() == 8 && word.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .and_then(|word| u32::from_str_radix(word, 16).ok())?;
+        let [major, minor, patch, _] = value.to_be_bytes();
+        Some(Self { major, minor, patch })
+    }
+}
+
 impl std::fmt::Display for BootloaderVersion {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}.{}.{}", self.major, self.minor, self.patch)
@@ -167,6 +180,12 @@ impl Profile {
         self.app
     }
 
+    /// The profile of `app`, if there is one.
+    #[must_use]
+    pub fn by_app(app: &str) -> Option<&'static Self> {
+        PROFILES.iter().find(|profile| profile.app == app)
+    }
+
     /// The profile of `package`'s app, if the package has the layout it
     /// describes: the chip, the address of the partition table, the size of
     /// the application slot and the slot the manifest writes to.
@@ -175,10 +194,7 @@ impl Profile {
     /// A [`ProfileError`] if the app has no profile or another layout.
     pub fn of(package: &StockPackage) -> Result<&'static Self, ProfileError> {
         let app = package.name().as_str();
-        let profile = PROFILES
-            .iter()
-            .find(|profile| profile.app == app)
-            .ok_or_else(|| ProfileError::Unknown(app.to_owned()))?;
+        let profile = Self::by_app(app).ok_or_else(|| ProfileError::Unknown(app.to_owned()))?;
         let mut differences = Vec::new();
         if package.app().chip != profile.chip {
             differences.push(format!("chip {}, expected {}", package.app().chip, profile.chip));

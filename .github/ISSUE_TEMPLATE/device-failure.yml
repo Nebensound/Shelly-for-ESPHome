@@ -23,7 +23,7 @@ body:
     id: model
     attributes:
       label: Model
-      description: "Device type the stock firmware reported, e.g. `SHSW-25`."
+      description: "Gen1: the device type the stock firmware reported, e.g. `SHSW-25`. Gen2 and later: the app name, e.g. `S1G3`."
     validations:
       required: true
   - type: input
@@ -62,8 +62,8 @@ body:
   - type: input
     id: package
     attributes:
-      label: Migration package
-      description: "`embedded` (built into the tool) or `file` (`--migration`)."
+      label: Package
+      description: "Gen1: `embedded` (built into the tool) or `file` (`--migration`). Gen2 and later: `official` (Shelly's update service) or `file` (`--package`)."
     validations:
       required: true
   - type: input
