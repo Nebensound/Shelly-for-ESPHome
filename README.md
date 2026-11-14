@@ -60,7 +60,9 @@ Models that users flashed successfully, from their
 they started from. The table is updated once a day.
 
 <!-- device-table:start -->
-No device reports yet.
+| Model | Stock firmware |
+|---|---|
+| ShellyDimmer2 (`SHDM-2`) | unknown |
 <!-- device-table:end -->
 
 Shelly Gen2 (ESP32) and Gen3 (ESP32-C3) devices cannot be flashed yet. `list`
