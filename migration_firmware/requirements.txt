@@ -3,4 +3,4 @@
 #   pip install -r migration_firmware/requirements.txt
 clang-format==23.1.5  # formatting of src/ and test/
 gcovr==8.8            # coverage gate of the host tests (needs GCC's gcov)
-PyYAML==6.0.3         # CI: checks each built package against mos.yml
+PyYAML==6.0.4         # CI: checks each built package against mos.yml
